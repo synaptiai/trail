@@ -323,6 +323,96 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm --filter @synapti/trail-audit publish --access public --provenance --no-git-checks --tag "${NPM_DIST_TAG}"
 
+      - name: Deprecate superseded prereleases
+        # rc.7 (DF-S5 fix): auto-deprecate older prereleases on the same
+        # major.minor.patch family. Replaces the rc.1-rc.6 hand-cranked
+        # `npm deprecate` loop that required interactive 2FA each cycle.
+        #
+        # Logic:
+        #   1. List all published versions of each package.
+        #   2. For each version that is a prerelease (semver with `-`),
+        #      shares major.minor.patch with NEW_VERSION, and is NOT the
+        #      just-published version, run `npm deprecate`.
+        #   3. Idempotent: already-deprecated versions are skipped.
+        #
+        # When NEW_VERSION is stable (no `-`), this loop deprecates ALL
+        # prereleases of that release-train (e.g. 0.1.0 → deprecate
+        # 0.1.0-rc.1..rc.N). When NEW_VERSION is itself a prerelease, it
+        # deprecates only earlier prereleases (e.g. 0.1.0-rc.7 →
+        # deprecate 0.1.0-rc.1..rc.6).
+        #
+        # The Automation NPM_TOKEN bypasses 2FA — same permissions class
+        # used for the publish steps above.
+        if: success()
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Family = major.minor.patch of NEW_VERSION (strip prerelease suffix).
+          family="${VERSION%%-*}"
+          new_is_stable=true
+          if [[ "$VERSION" == *-* ]]; then
+            new_is_stable=false
+          fi
+          echo "VERSION=$VERSION family=$family new_is_stable=$new_is_stable"
+
+          for pkg in @synapti/trail-capture @synapti/trail-audit; do
+            echo
+            echo "::group::Deprecation pass for $pkg"
+            # Fetch published versions. `npm view ... versions --json` returns
+            # an array. `|| echo "[]"` keeps the loop safe if the package is
+            # brand new (no versions yet — though by this point we just
+            # published at least one, so this branch is for robustness).
+            versions=$(npm view "$pkg" versions --json 2>/dev/null || echo "[]")
+            for v in $(echo "$versions" | jq -r '.[]'); do
+              # Skip the version we just published.
+              if [[ "$v" == "$VERSION" ]]; then continue; fi
+              # Skip stable versions (no `-` in the version string). We
+              # never deprecate stable releases automatically — that's a
+              # call for a human (e.g. security advisory, EOL).
+              if [[ "$v" != *-* ]]; then continue; fi
+              # Family check: only deprecate prereleases of the SAME
+              # major.minor.patch as NEW_VERSION. Leaves prereleases on
+              # OTHER trains (e.g. 0.2.0-rc.1 when shipping 0.1.0)
+              # untouched.
+              v_family="${v%%-*}"
+              if [[ "$v_family" != "$family" ]]; then continue; fi
+              # Skip already deprecated.
+              existing=$(npm view "$pkg@$v" deprecated 2>/dev/null || echo "")
+              if [[ -n "$existing" && "$existing" != "undefined" ]]; then
+                echo "  $pkg@$v already deprecated; skipping"
+                continue
+              fi
+              # Deprecation message: point users at @next (latest
+              # prerelease) for prerelease NEW, or @latest (now points at
+              # stable) for stable NEW.
+              if [[ "$new_is_stable" == "true" ]]; then
+                msg="Superseded by ${VERSION} (stable). Use @latest."
+              else
+                msg="Superseded by ${VERSION}. Use @next (or @latest after stable ships)."
+              fi
+              echo "  deprecating $pkg@$v — \"$msg\""
+              npm deprecate "$pkg@$v" "$msg"
+            done
+            echo "::endgroup::"
+          done
+
+      - name: Align dist-tags on stable publish
+        # Only relevant when shipping a stable (no `-` in VERSION).
+        # `npm publish --tag latest` moved `latest` to the new version
+        # already; this step also moves `next` to point at stable so
+        # `npm install @pkg@next` doesn't keep returning a now-superseded
+        # prerelease after stable ships.
+        if: success() && !contains(env.VERSION, '-')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in @synapti/trail-capture @synapti/trail-audit; do
+            echo "Aligning $pkg@next → $VERSION (stable)"
+            npm dist-tag add "$pkg@$VERSION" next
+          done
+
   # ─────────────────────────────────────────────────────────────────────
   # 4. Build Tauri installers on each desktop OS
   # ─────────────────────────────────────────────────────────────────────

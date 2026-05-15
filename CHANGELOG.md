@@ -4,6 +4,57 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc.7] — 2026-05-15
+
+Seventh release candidate. Substance is identical to rc.6 — same fixes,
+same surface. rc.7 exists to **exercise a new release-pipeline step**:
+auto-deprecation of superseded prereleases.
+
+### Added — release pipeline
+
+- `.github/workflows/release.yml` now includes a "Deprecate superseded
+  prereleases" step after npm publish. For each prior prerelease
+  matching the just-published version's major.minor.patch family, it
+  runs `npm deprecate` with a message pointing to the new version.
+  Uses the same Automation NPM_TOKEN that already publishes; no
+  interactive 2FA required.
+
+  Replaces the hand-cranked `for v in rc.1..rc.N-1; npm deprecate ...`
+  loop that was a release-procedure smell across rc.1 → rc.6.
+  Idempotent: already-deprecated versions are skipped on re-runs.
+
+- A second step, "Align dist-tags on stable publish", runs **only**
+  when shipping a non-prerelease version. `npm publish --tag latest`
+  moves `latest` automatically; this step also moves `next` to point
+  at stable so `@pkg@next` doesn't keep returning a superseded
+  prerelease after stable lands. (Prerelease publishes leave `latest`
+  alone — npm convention.)
+
+### Validated against the rc.1-rc.6 backlog
+
+Publishing rc.7 exercises the new step against 11 un-deprecated
+prereleases:
+
+- `@synapti/trail-capture@0.1.0-rc.{1..6}` (six versions)
+- `@synapti/trail-audit@0.1.0-rc.{2..6}` (five versions; rc.1 was
+  never published due to the partial-publish failure documented in
+  the rc.2 entry below)
+
+All eleven should land with the standardised "Superseded by
+0.1.0-rc.7. Use @next (or @latest after stable ships)." message
+after the rc.7 npm publish succeeds.
+
+### No code changes
+
+CLI behaviour, schema, redaction patterns, render output, and all
+test fixtures are byte-identical to rc.6. The `_meta.generator.version`
+field of newly generated packets will read `0.1.0-rc.7` (driven by the
+bumped `VERSION` constant), but no semantic differences exist.
+
+After rc.7 ships and the deprecation step is verified working, 0.1.0
+stable can cut cleanly — its publish run will exercise the same step
+to deprecate all rc.* in one shot.
+
 ## [0.1.0-rc.6] — 2026-05-15
 
 Sixth release candidate. rc.5 fixed the bin entrypoint so the published
