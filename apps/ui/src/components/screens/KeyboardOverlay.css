@@ -1,0 +1,108 @@
+/**
+ * Keyboard-overlay (Sprint 6 full styled overlay — gh#13 AC-1).
+ *
+ * Layout:
+ *   - .kbo wraps the content inside the modal body; the modal itself
+ *     handles backdrop, focus trap, ARIA dialog.
+ *   - .kbo__search is a full-width search input above the scroll
+ *     region.
+ *   - .kbo__scroll caps the height + scrolls when shortcut groups
+ *     overflow the modal-md frame.
+ *   - .kbo__group is a section per context; .kbo__group-label is the
+ *     visible heading.
+ *   - .kbo__table is a tight key/action table; <thead> stays in DOM
+ *     for SR users via .sr-only.
+ *
+ * AA non-text contrast: .kbo__search border + focus ring inherit the
+ * design tokens that B6 P1 brightened.
+ */
+.kbo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+}
+
+.kbo__search-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.kbo__search {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  border: var(--border-width-hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+
+.kbo__search:focus {
+  outline: var(--border-width-thick) solid var(--focus-ring);
+  outline-offset: var(--border-width-thick);
+}
+
+.kbo__scroll {
+  max-height: var(--size-modal-sm);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.kbo__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.kbo__group-label {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin: 0;
+  /* Sticky group headers help orient the user when scrolling through
+     a long filtered list. */
+  position: sticky;
+  top: 0;
+  background: var(--surface-raised);
+  padding: var(--space-1) 0;
+  z-index: 1;
+}
+
+.kbo__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.kbo__table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width-hairline) solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.kbo__key-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.kbo__empty {
+  color: var(--text-secondary);
+  margin: 0;
+  padding: var(--space-3);
+  text-align: center;
+}
+
+.kbo__note {
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* Reduced-motion: nothing animates here, but keep the rule co-located
+ * for future additions (per AC-2 reduced-motion checklist). */
+@media (prefers-reduced-motion: reduce) {
+  .kbo__scroll {
+    scroll-behavior: auto;
+  }
+}

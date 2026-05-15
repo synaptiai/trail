@@ -1,0 +1,571 @@
+name: Release (v*.*.*)
+
+# Triggers on tag-push matching the v0.x.y pattern OR via workflow_dispatch
+# for dry-runs (no publish, no release-edit). Per gh#5 acceptance criteria #5.
+#
+# Job topology:
+#   1. validate-config — fast Tauri config schema validation. Catches
+#      tauri.conf.json typos in <30s before the 60-min matrix burns CI.
+#   2. create-draft-release — runs only on tag push. Creates a single
+#      draft GitHub Release; the matrix uploads to its release_id, avoiding
+#      the multi-draft race that occurred when each tauri-action invocation
+#      independently tried to create the draft.
+#   3. npm-publish — gated on tag push (no branch dispatch publish).
+#      Pre-flights `npm view` to detect a half-published state from a
+#      prior failed run and refuses to retry over published versions.
+#      Skipped on dry_run.
+#   4. tauri-build — matrix on macos-latest + ubuntu-22.04 + windows-latest;
+#      produces .dmg + .deb + .AppImage + .msi via tauri-action. v0.1.0
+#      ships un-signed; the macOS + Windows signing secrets are accepted as
+#      inputs but gracefully no-op'd if absent.
+#   5. release-finalise — verifies all matrix legs uploaded their installers
+#      to the draft Release; surfaces a clear failure if the asset set is
+#      partial. The draft remains unpublished — operator decides.
+#
+# All third-party Actions are pinned to commit SHAs (per cycle-1 review F1-1
+# supply-chain finding) — version comments name the semver tag for
+# Dependabot's GitHub Actions ecosystem to bump them safely.
+#
+# Required repository secrets for full ship:
+#   NPM_TOKEN              — npm scope @synapti publish access (required for
+#                            npm-publish job; missing → loud failure with
+#                            remediation pointer to Settings → Secrets)
+# Optional (deferred to v0.1.x per gh#5 "Out of scope"):
+#   APPLE_CERTIFICATE      — Developer ID Application cert (.p12 base64)
+#   APPLE_CERTIFICATE_PASSWORD
+#   APPLE_SIGNING_IDENTITY — "Developer ID Application: Synapti AI (TEAMID)"
+#   APPLE_ID
+#   APPLE_PASSWORD         — app-specific password
+#   APPLE_TEAM_ID
+#   WINDOWS_CERTIFICATE    — code-signing cert (.pfx base64)
+#   WINDOWS_CERTIFICATE_PASSWORD
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only — skip npm publish + skip GitHub release creation'
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false   # never cancel a half-done publish
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # 1. Validate Tauri config (fast preflight, ~30s)
+  # ─────────────────────────────────────────────────────────────────────
+  validate-config:
+    name: Validate Tauri config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@e9540b3eafaf84907c087a645d3258bfaa861427  # v3.0.0
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate tauri.conf.json schema
+        run: pnpm --filter @trail/ui exec tauri info
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 2. Create the draft GitHub Release once (tag push only)
+  # ─────────────────────────────────────────────────────────────────────
+  create-draft-release:
+    name: Create draft GitHub Release
+    needs: validate-config
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Create draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag='${{ github.ref_name }}'
+          # Compute prerelease from tag suffix: vX.Y.Z-rc.N → prerelease.
+          prerelease='false'
+          case "$tag" in
+            *-*) prerelease='true' ;;
+          esac
+          body=$(cat <<NOTES
+          Trail $tag — see CHANGELOG.md for the full list of changes.
+
+          v0.1.0 ships un-signed (macOS + Windows). First-launch workarounds:
+          - **macOS**: Right-click Trail.app → Open → Open (bypasses Gatekeeper).
+          - **Windows**: SmartScreen → "More info" → "Run anyway".
+          Code signing arrives in v0.1.x.
+          NOTES
+          )
+          # Idempotent: if a draft already exists for this tag (re-run scenario),
+          # reuse it; otherwise create one. Only the first matrix runner needs
+          # this to succeed.
+          existing=$(gh release view "$tag" --json id --jq .id 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            echo "release_id=$existing" >> "$GITHUB_OUTPUT"
+            echo "Reusing existing draft release $existing for $tag"
+          else
+            args=(--draft --title "Trail $tag" --notes "$body")
+            if [ "$prerelease" = 'true' ]; then args+=(--prerelease); fi
+            gh release create "$tag" "${args[@]}"
+            new_id=$(gh release view "$tag" --json id --jq .id)
+            echo "release_id=$new_id" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 3. Publish @synapti/trail-capture + @synapti/trail-audit to npm
+  # ─────────────────────────────────────────────────────────────────────
+  npm-publish:
+    name: npm publish (@synapti/trail-capture + @synapti/trail-audit)
+    needs: validate-config
+    # Gate: tag push only OR explicit non-dry-run dispatch from a tag ref.
+    # Branch dispatches with dry_run:false are blocked — tag is required to
+    # avoid accidental "publish whatever's on main" via the dispatch UI.
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch'
+        && github.event.inputs.dry_run != 'true'
+        && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write   # required for npm provenance
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@e9540b3eafaf84907c087a645d3258bfaa861427  # v3.0.0
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve VERSION from tag
+        # Cycle-3 C3-S-CR-3: prior version hardcoded `0.1.0` at 5 sites
+        # (tarball assertion, pre-flight collision check, propagation poll).
+        # On the next minor (`v0.1.1`, `v0.2.0`, RCs) those sites would
+        # silently break: the tarball name assertion fails immediately, but
+        # the collision-check `npm view @synapti/trail-capture@0.1.0` would always
+        # find the prior 0.1.0 — converting the defense into a no-op for
+        # any non-0.1.0 ship. Derive VERSION once and reuse via $GITHUB_ENV.
+        run: |
+          set -euo pipefail
+          tag='${{ github.ref_name }}'
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$ ]]; then
+            echo "::error::Tag '${tag}' does not parse as a semver release version after stripping leading 'v'."
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Resolved VERSION=${version}"
+
+      - name: Resolve NPM_DIST_TAG from VERSION
+        # Prereleases (e.g. v0.1.0-rc.1) publish under the `next` dist-tag so
+        # they don't claim `latest`. Default `npm i @synapti/trail-capture` keeps
+        # returning the prior latest (or nothing, if no latest has been
+        # promoted yet) until we explicitly run `npm dist-tag add @0.1.0
+        # latest` after AC#9 dogfood passes. Stable versions (no `-suffix`)
+        # publish to `latest` as usual.
+        run: |
+          set -euo pipefail
+          case "$VERSION" in
+            *-*) tag='next' ;;
+            *)   tag='latest' ;;
+          esac
+          echo "NPM_DIST_TAG=${tag}" >> "$GITHUB_ENV"
+          echo "Resolved NPM_DIST_TAG=${tag} (for VERSION=${VERSION})"
+
+      - name: Build @synapti/trail-capture
+        run: pnpm --filter @synapti/trail-capture build
+
+      - name: Build @synapti/trail-audit
+        run: pnpm --filter @synapti/trail-audit build
+
+      - name: Verify package contents (dry-run pack)
+        # pnpm's `pack` does not support `--filter` (implicitly adds
+        # --recursive which pack rejects). Run from each package's cwd.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/trail-pack
+          (cd apps/capture && pnpm pack --pack-destination /tmp/trail-pack)
+          (cd apps/audit && pnpm pack --pack-destination /tmp/trail-pack)
+          test -f "/tmp/trail-pack/synapti-trail-capture-${VERSION}.tgz"
+          test -f "/tmp/trail-pack/synapti-trail-audit-${VERSION}.tgz"
+          ls -la /tmp/trail-pack/
+
+      - name: Verify NPM_TOKEN is configured
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN secret is not configured. Cannot publish."
+            echo "::error::Configure under: Settings → Secrets and variables → Actions"
+            echo "::error::This workflow strict-fails when NPM_TOKEN is missing — there is no graceful skip."
+            exit 1
+          fi
+          echo "::add-mask::$NPM_TOKEN"
+
+      - name: Pre-flight — refuse to overlap with already-published versions
+        # If capture@$VERSION or audit@$VERSION already exist on the
+        # registry, this is a recovery scenario from a prior partial
+        # publish. npm policy (24h unpublish window, restricted with
+        # dependents) means re-running cannot heal it; bump the patch +
+        # re-tag is the only path forward. Failing here is louder than
+        # getting a 403 mid-publish.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in @synapti/trail-capture @synapti/trail-audit; do
+            if npm view "${pkg}@${VERSION}" version >/dev/null 2>&1; then
+              echo "::error::${pkg}@${VERSION} is already published on npm."
+              echo "::error::A prior publish run partially succeeded. The only recovery"
+              echo "::error::is to bump the package patch in package.json + re-tag."
+              echo "::error::npm's 24h unpublish window is restricted for packages with dependents."
+              exit 1
+            fi
+          done
+
+      - name: Publish @synapti/trail-capture (with provenance)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm --filter @synapti/trail-capture publish --access public --provenance --no-git-checks --tag "${NPM_DIST_TAG}"
+
+      - name: Wait for capture to propagate to npm registry CDN
+        # @synapti/trail-audit depends on @synapti/trail-capture@workspace:^X.Y.Z, which
+        # pnpm rewrites to ^${VERSION} at publish time. Audit's publish
+        # needs the capture entry to be resolvable. npm's registry has
+        # eventual consistency (~30-180s); poll explicitly rather than
+        # racing.
+        #
+        # Cycle-3 C3-S-EH-5: prior version threw away `npm view` stderr
+        # via `>/dev/null 2>&1`, so a transient 5xx registry outage was
+        # indistinguishable from a "not yet propagated" 404. Capture
+        # stderr to a tmpfile on each attempt and surface it in the
+        # terminal "did not propagate" error so an oncall responder
+        # immediately sees `5xx` vs `404`.
+        run: |
+          set -euo pipefail
+          stderr_log=$(mktemp)
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            : >"$stderr_log"
+            if npm view "@synapti/trail-capture@${VERSION}" version >/dev/null 2>"$stderr_log"; then
+              echo "capture@${VERSION} visible on registry (attempt $attempt)"
+              rm -f "$stderr_log"
+              exit 0
+            fi
+            echo "capture@${VERSION} not yet visible on registry; waiting 30s (attempt $attempt/10)"
+            if [ -s "$stderr_log" ]; then
+              echo "  last npm view stderr (first 5 lines):"
+              head -n 5 "$stderr_log" | sed 's/^/    /'
+            fi
+            sleep 30
+          done
+          echo "::error::capture@${VERSION} did not propagate to registry within 5 minutes."
+          if [ -s "$stderr_log" ]; then
+            echo "::error::Final npm view stderr was:"
+            head -n 10 "$stderr_log" | sed 's/^/::error::  /'
+          fi
+          echo "::error::Audit publish skipped to avoid 404. Re-run release workflow OR"
+          echo "::error::wait for propagation and manually publish audit."
+          rm -f "$stderr_log"
+          exit 1
+
+      - name: Publish @synapti/trail-audit (with provenance)
+        if: success()
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm --filter @synapti/trail-audit publish --access public --provenance --no-git-checks --tag "${NPM_DIST_TAG}"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 4. Build Tauri installers on each desktop OS
+  # ─────────────────────────────────────────────────────────────────────
+  tauri-build:
+    name: Tauri (${{ matrix.platform.label }})
+    needs: [validate-config, create-draft-release]
+    # On workflow_dispatch the create-draft-release job is skipped; tauri-build
+    # still runs (uploads artifacts) so the dry-run path stays useful.
+    if: |
+      always()
+      && needs.validate-config.result == 'success'
+      && (needs.create-draft-release.result == 'success' || needs.create-draft-release.result == 'skipped')
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: write   # tauri-action uploads to the draft Release
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { os: macos-latest, label: 'macOS arm64+x64', args: '--target universal-apple-darwin' }
+          - { os: ubuntu-22.04, label: 'Linux x64', args: '' }
+          - { os: windows-latest, label: 'Windows x64', args: '' }
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve MSI compatibility from tag
+        # Tauri 2's MSI bundler rejects non-numeric prerelease identifiers
+        # ("optional pre-release identifier in app version must be
+        # numeric-only and cannot be greater than 65535 for msi target").
+        # Stable versions (v0.1.0) and numeric prereleases (v0.1.0-1) pass;
+        # alphanumeric prereleases (v0.1.0-rc.1, v0.1.0-beta.2) fail.
+        # Windows leg skips the build step in that case; release-finalise
+        # mirrors the gate so a prerelease isn't flagged for a missing .msi.
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ github.ref_name }}'
+          msi_ok='true'
+          case "$tag" in
+            v*-*)
+              suffix="${tag#*-}"
+              case "$suffix" in
+                ''|*[!0-9]*) msi_ok='false' ;;
+              esac
+              ;;
+          esac
+          echo "MSI_COMPATIBLE=${msi_ok}" >> "$GITHUB_ENV"
+          echo "MSI compatibility for tag $tag: $msi_ok"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@e9540b3eafaf84907c087a645d3258bfaa861427  # v3.0.0
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Set up Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable as of 2026-05-10
+        with:
+          # macOS universal target requires both architectures.
+          targets: ${{ matrix.platform.os == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - name: Install Tauri Linux build deps
+        if: matrix.platform.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            patchelf
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/ui/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ matrix.platform.label }}-${{ hashFiles('apps/ui/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ matrix.platform.label }}-
+            cargo-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate design tokens
+        run: pnpm --filter @trail/ui run tokens:gen
+
+      - name: Build frontend
+        run: pnpm --filter @trail/ui run build
+
+      - name: Configure signing env (only when secrets are non-empty)
+        # tauri-action runs `security import` (macOS) or `signtool import`
+        # (Windows) whenever the corresponding env var is set — even if it
+        # is the empty string from an unset secret. That produces a hard
+        # `failed to import keychain certificate` error rather than a
+        # graceful "skip signing" path. Mirror tauri-action's documented
+        # contract by only exporting the env vars when the secret actually
+        # has content, via $GITHUB_ENV. tauri-action then sees them as
+        # absent and emits unsigned installers per gh#5 "Out of scope" v0.1
+        # ship plan. Code signing wires up in v0.1.x when secrets are
+        # configured in repo settings.
+        shell: bash
+        env:
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERT_PW: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_IDENT: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_USER: ${{ secrets.APPLE_ID }}
+          APPLE_PW: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WIN_CERT_PW: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -n "$APPLE_CERT" ]; then
+            {
+              echo "APPLE_CERTIFICATE=$APPLE_CERT"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERT_PW"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_IDENT"
+              echo "APPLE_ID=$APPLE_USER"
+              echo "APPLE_PASSWORD=$APPLE_PW"
+              echo "APPLE_TEAM_ID=$APPLE_TEAM"
+            } >> "$GITHUB_ENV"
+            echo "Apple signing env exported (cert present)"
+          else
+            echo "Apple signing skipped (no APPLE_CERTIFICATE secret)"
+          fi
+          if [ -n "$WIN_CERT" ]; then
+            {
+              echo "WINDOWS_CERTIFICATE=$WIN_CERT"
+              echo "WINDOWS_CERTIFICATE_PASSWORD=$WIN_CERT_PW"
+            } >> "$GITHUB_ENV"
+            echo "Windows signing env exported (cert present)"
+          else
+            echo "Windows signing skipped (no WINDOWS_CERTIFICATE secret)"
+          fi
+
+      - name: Build Tauri installers
+        # Skip the Windows leg's build when the tag carries a non-numeric
+        # prerelease identifier (MSI bundler rejects those — see "Resolve
+        # MSI compatibility from tag" step). The leg still runs through
+        # checkout + setup so cache primes for the next tag, but the build
+        # is a no-op and the matrix entry ends green. release-finalise
+        # mirrors the gate.
+        if: matrix.platform.os != 'windows-latest' || env.MSI_COMPATIBLE == 'true'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        env:
+          # On tag push we attach to the draft created by create-draft-release.
+          # GITHUB_TOKEN scope is contents:write per the job-level permission.
+          # APPLE_* and WINDOWS_* signing env are populated by the previous
+          # "Configure signing env" step via $GITHUB_ENV when secrets exist.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/ui
+          args: ${{ matrix.platform.args }}
+          # On push: upload to the single draft created by create-draft-release.
+          # On dispatch: empty releaseId means tauri-action does nothing
+          # release-y, so artifacts are picked up by the upload-artifact step
+          # below.
+          releaseId: ${{ github.event_name == 'push' && needs.create-draft-release.outputs.release_id || '' }}
+          includeUpdaterJson: false
+
+      - name: Upload installer artefacts (workflow_dispatch path)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.0
+        with:
+          name: tauri-${{ runner.os }}
+          path: |
+            apps/ui/src-tauri/target/release/bundle/dmg/*.dmg
+            apps/ui/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            apps/ui/src-tauri/target/release/bundle/deb/*.deb
+            apps/ui/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/ui/src-tauri/target/release/bundle/msi/*.msi
+            apps/ui/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            apps/ui/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 5. Verify the draft Release got all expected installers
+  # ─────────────────────────────────────────────────────────────────────
+  release-finalise:
+    name: Verify draft release assets
+    needs: [create-draft-release, tauri-build]
+    if: github.event_name == 'push' && always() && needs.create-draft-release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: List release assets and assert per-platform presence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag='${{ github.ref_name }}'
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          echo "Assets attached to $tag:"
+          echo "$assets"
+          echo
+          # MSI bundler rejects non-numeric prereleases (mirror of the gate
+          # in tauri-build). Don't flag a missing .msi for v*-rc.*, v*-beta.*,
+          # etc. — those releases never had Windows in scope. Numeric
+          # prereleases (v*-1, v*-2) and stable tags still require .msi.
+          msi_required='true'
+          case "$tag" in
+            v*-*)
+              suffix="${tag#*-}"
+              case "$suffix" in
+                ''|*[!0-9]*) msi_required='false' ;;
+              esac
+              ;;
+          esac
+          required="dmg deb AppImage"
+          if [ "$msi_required" = 'true' ]; then required="$required msi"; fi
+          missing=0
+          for ext in $required; do
+            if echo "$assets" | grep -q -i "\.${ext}$"; then
+              echo "✓ found .${ext}"
+            else
+              echo "::error::missing .${ext} installer in draft release $tag"
+              missing=1
+            fi
+          done
+          if [ "$msi_required" = 'false' ]; then
+            echo "::notice::Windows .msi installer omitted for non-numeric prerelease tag $tag (MSI bundler restriction; ships with v0.1.0 final)."
+          fi
+          if [ "$missing" = '1' ]; then
+            echo "::error::Draft release $tag has incomplete asset set."
+            echo "::error::The draft remains unpublished. Inspect tauri-build matrix legs"
+            echo "::error::for the failed platform and either re-run the workflow or"
+            echo "::error::manually upload the missing installer."
+            exit 1
+          fi
+          expected_count="$(echo "$required" | wc -w | tr -d ' ')"
+          echo "::notice::Draft release $tag has all ${expected_count} required installers. Operator can publish manually."

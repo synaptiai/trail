@@ -1,0 +1,41 @@
+.diff-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.diff-tab__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-1);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+}
+
+.diff-tab__additions {
+  color: var(--risk-low);
+}
+
+.diff-tab__deletions {
+  color: var(--risk-high);
+}
+
+.diff-tab__hunks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Header: DIFF-NNN reads as the cross-reference key (claim → diff via
+   evidence_refs); operation is the schema's locked enum. The id gets
+   slight emphasis via the accent-text hover; the op stays secondary. */
+.diff-tab__hunk-id {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.diff-tab__hunk-op {
+  color: var(--text-secondary);
+}

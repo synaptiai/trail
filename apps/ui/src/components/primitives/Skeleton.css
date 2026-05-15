@@ -1,0 +1,13 @@
+.skeleton {
+  display: inline-block;
+  border-radius: var(--radius-1);
+  vertical-align: middle;
+}
+
+.skeleton--text { display: inline-block; }
+.skeleton--block { display: block; }
+.skeleton--row { display: block; width: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { background: var(--surface-raised); animation: none !important; }
+}

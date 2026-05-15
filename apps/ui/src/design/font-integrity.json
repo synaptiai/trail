@@ -1,0 +1,34 @@
+{
+  "$comment": "SHA-256 hashes of self-hosted OFL fonts. Update via `node apps/ui/scripts/font-integrity-update.mjs` after vendoring. Runtime SHA-256 verifier (font-integrity.ts) lands in v0.1.x; until then these hashes serve as a static integrity reference + audit trail. v0.1.0 ships Newsreader vendored + Public Sans / Commit Mono on the CSS fallback chain — see apps/ui/public/fonts/README.md.",
+  "fonts": [
+    {
+      "path": "Newsreader[opsz,wght].woff2",
+      "family": "Newsreader",
+      "license": "OFL-1.1",
+      "source": "https://github.com/productiontype/newsreader",
+      "sha256": "1faa3380ac0e87e057b180e03fd94bd708a612afb67d2590677be4508909fae9"
+    },
+    {
+      "path": "PublicSans[wght].woff2",
+      "family": "Public Sans",
+      "license": "OFL-1.1",
+      "source": "https://github.com/uswds/public-sans",
+      "sha256": null
+    },
+    {
+      "path": "CommitMono-400-Regular.woff2",
+      "family": "Commit Mono 400",
+      "license": "OFL-1.1",
+      "source": "https://commitmono.com",
+      "sha256": null
+    },
+    {
+      "path": "CommitMono-700-Bold.woff2",
+      "family": "Commit Mono 700",
+      "license": "OFL-1.1",
+      "source": "https://commitmono.com",
+      "sha256": null
+    }
+  ],
+  "$note": "Null sha256 = pending vendor. v0.1.0 vendors Newsreader only; Public Sans + Commit Mono use the CSS fallback chain (Public Sans → system-ui; Commit Mono → JetBrains Mono / Menlo) until v0.1.x converts the upstream variable TTF / OTF assets to WOFF2. Run `node apps/ui/scripts/font-integrity-update.mjs` after each vendor change to recompute hashes."
+}

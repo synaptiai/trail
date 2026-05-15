@@ -1,0 +1,61 @@
+.diff-hunk {
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.diff-hunk__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border-bottom: var(--border-width-hairline) solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.diff-hunk__path { color: var(--text-primary); }
+/* Sprint 3b axe fix: --text-tertiary on --surface-raised was 3.3:1 (WCAG
+   AA fail at 13px). --text-secondary is 8.6:1 in dark, 7.4:1 in light —
+   safely above 4.5:1 for normal text. The "range" slot stays visually
+   subordinate to "path" via type-mono-sm (vs type-mono) AND via the
+   parent header background; we don't need the additional opacity-class
+   color step that fails contrast. */
+.diff-hunk__range { color: var(--text-secondary); }
+
+.diff-hunk__body {
+  margin: 0;
+  padding: var(--space-3) 0;
+  font-family: var(--font-mono);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.diff-hunk__line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+}
+
+/* Cycle-3 C3 (PR #21): word-form classes (was --\+ / --\- which axe-core
+   + happy-dom 20 reject as invalid CSS selectors at scan time). The
+   add/del semantics are unchanged. */
+.diff-hunk__line--add { background: var(--risk-low-bg); }
+.diff-hunk__line--del { background: var(--risk-high-bg); }
+
+.diff-hunk__gutter {
+  width: 1ch;
+  flex: 0 0 auto;
+  text-align: center;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.diff-hunk__line--add .diff-hunk__gutter { color: var(--risk-low); }
+.diff-hunk__line--del .diff-hunk__gutter { color: var(--risk-high); }
+
+.diff-hunk__content { flex: 1 1 auto; }
+
+.diff-hunk__placeholder { padding: var(--space-4); color: var(--text-tertiary); }

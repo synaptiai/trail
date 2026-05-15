@@ -1,0 +1,31 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  /* height (not min-height) caps the app at the viewport so child overflow
+     is honoured. Without this, a sidebar with many rows would grow the
+     app beyond viewport, defeating the inner scroll containers. */
+  height: 100vh;
+  min-height: 100vh;
+}
+
+.app__main {
+  display: grid;
+  grid-template-columns: var(--size-sidebar) 1fr;
+  flex: 1 1 auto;
+  /* min-height: 0 plus an explicit grid-template-rows ensures the
+     children get a constrained height. */
+  grid-template-rows: 1fr;
+  min-height: 0;
+}
+
+@media (max-width: 1024px) {
+  .app__main {
+    grid-template-columns: var(--size-sidebar-rail) 1fr;
+  }
+}
+
+.app__content {
+  padding: var(--space-6);
+  overflow: auto;
+  min-width: 0;
+}

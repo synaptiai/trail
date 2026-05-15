@@ -1,0 +1,176 @@
+name: UI Quality Gates (TS + Rust)
+
+# Per PR #6 cycle-1 review F10 (P2 ci-correctness consensus HIGH):
+#
+# The repository previously had no CI exercising the new apps/ui/ TypeScript
+# code or the apps/ui/src-tauri/ Rust crate. Reviewers could not verify the
+# 48 vitest + 14 cargo test claims without a local checkout. This workflow
+# runs the full quality gate (typecheck, lint, vitest, cargo check, cargo
+# test) on every PR that touches apps/ui or workflow files.
+#
+# Trigger scope: only paths that affect the UI/Tauri pipeline. The pre-existing
+# Mycelium dogfood/Python jobs are governed by validate.yml + dogfood.yml and
+# remain out of scope here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/ui/**'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - 'tsconfig.base.json'
+      - '.github/workflows/ui-quality-gates.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/ui/**'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - 'tsconfig.base.json'
+      - '.github/workflows/ui-quality-gates.yml'
+
+# Cancel in-flight runs when a new commit arrives on the same ref.
+concurrency:
+  group: ui-quality-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ts-quality:
+    name: TS — typecheck, lint, vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate design tokens (codegen-tokens.mjs)
+        run: pnpm --filter @trail/ui run tokens:gen
+
+      - name: Typecheck (tsc --noEmit)
+        run: pnpm --filter @trail/ui run typecheck
+
+      - name: Lint (ESLint TS/TSX + lint-css-tokens.mjs CSS scan)
+        run: pnpm --filter @trail/ui run lint
+
+      - name: Vitest (unit tests, including jest-axe a11y scans)
+        run: pnpm --filter @trail/ui run test
+
+      - name: Build (vite production bundle)
+        # Verifies the bundle compiles end-to-end; required for the cargo
+        # check job below since tauri.conf.json points frontendDist at ../dist.
+        run: pnpm --filter @trail/ui run build
+
+      - name: Upload built frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+          retention-days: 1
+
+  rust-quality:
+    name: Rust — cargo check + cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: ts-quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/ui/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/ui/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install Tauri Linux build deps
+        # Tauri 2.x on Linux needs webkit2gtk-4.1 + ancillary libs. These are
+        # only needed for the desktop build path; cargo check + cargo test
+        # link against them transitively via tauri's build script.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            patchelf
+
+      - name: Download built frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+
+      - name: cargo check (workspace)
+        working-directory: apps/ui/src-tauri
+        run: cargo check --locked
+
+      - name: cargo test (workspace)
+        working-directory: apps/ui/src-tauri
+        run: cargo test --locked
+
+  secrets-scan:
+    name: Secrets scan (redaction-pattern engine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 20
+        # The scanner is a Node script (bin/secrets-scan.mjs). It uses Node's
+        # built-in regex engine (PCRE-compatible) — required because the
+        # redaction-pattern catalog uses `\b` word-boundary anchors that
+        # POSIX ERE (the engine `grep -E` uses) does not support.
+        # Per PR #6 cycle-2 review N15 (P1 ci-correctness consensus HIGH).
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Self-test the scanner (planted-secret fixtures)
+        # Proves the scanner actually catches secrets — not just appears to.
+        # Plants known-shape tokens for every catalog pattern it tests, runs
+        # the matcher, asserts every plant is caught, and cleans up. This step
+        # MUST pass before the diff scan can be trusted.
+        run: node bin/secrets-scan.mjs --self-test
+
+      - name: Scan diff for known secret patterns
+        # Per F10's secrets-scan requirement. The scanner reads the catalog,
+        # compiles each pattern via Node's RegExp (which supports `\b`), then
+        # walks the unified-diff's added lines. Hits fail the job; the author
+        # can either redact-and-re-push or, if the match is a documented test
+        # fixture, add the file path to bin/secrets-scan.mjs's ALLOWLIST_PATHS.
+        run: |
+          set -euo pipefail
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch --no-tags origin "$GITHUB_BASE_REF" --depth=50
+            range="origin/$GITHUB_BASE_REF...HEAD"
+          else
+            range="HEAD~1...HEAD"
+          fi
+          node bin/secrets-scan.mjs --diff "$range"

@@ -1,0 +1,53 @@
+.packet-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.packet-header__title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+
+.packet-header__title {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.packet-header__branch {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+/* "packet-2" hint chip — read like a stamp; copper accent left rule per B3 §4.4
+   override-stack motif (a re-capture IS a recorded decision). */
+.packet-header__packet-n {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
+  border-left: var(--border-width-thick) solid var(--accent);
+  color: var(--accent-text);
+  background: transparent;
+  border-radius: var(--radius-1);
+}
+
+.packet-header__meta,
+.packet-header__sub,
+.packet-header__counts {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.packet-header__id,
+.packet-header__time {
+  color: var(--text-primary);
+}
+
+.packet-header__sep {
+  color: var(--text-tertiary);
+}
+
+.packet-header .horizon--packet-header {
+  margin-block: var(--space-3);
+}

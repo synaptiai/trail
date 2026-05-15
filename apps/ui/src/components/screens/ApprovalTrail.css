@@ -1,0 +1,76 @@
+.approval-trail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.approval-trail__caption {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.approval-trail__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.approval-trail__entry {
+  border-left: var(--border-width-thick) solid var(--border-strong);
+  padding: var(--space-3) var(--space-5);
+  background: var(--surface);
+  border-radius: var(--radius-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Decision-tone left rule per B3 §4 — color encodes outcome at a glance.
+   Triple-redundancy holds: pigment + decision word + verbal aria-label. */
+.approval-trail__entry--accept { border-left-color: var(--risk-low); }
+.approval-trail__entry--changes { border-left-color: var(--risk-med); }
+.approval-trail__entry--block { border-left-color: var(--risk-high); }
+.approval-trail__entry--reject { border-left-color: var(--risk-crit); }
+
+.approval-trail__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.approval-trail__time {
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
+.approval-trail__decision {
+  color: var(--text-primary);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-1);
+  flex: 0 0 auto;
+}
+
+.approval-trail__decision--accept { color: var(--risk-low); background: var(--risk-low-bg); }
+.approval-trail__decision--changes { color: var(--risk-med); background: var(--risk-med-bg); }
+.approval-trail__decision--block { color: var(--risk-high); background: var(--risk-high-bg); }
+.approval-trail__decision--reject { color: var(--risk-crit); background: var(--risk-crit-bg); }
+
+.approval-trail__claim {
+  color: var(--text-primary);
+}
+
+.approval-trail__by {
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.approval-trail__reason {
+  margin: 0;
+  color: var(--text-secondary);
+  padding-left: var(--space-3);
+  border-left: var(--border-width-hairline) solid var(--border-subtle);
+}

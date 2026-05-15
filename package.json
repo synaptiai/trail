@@ -1,0 +1,44 @@
+{
+  "name": "trail",
+  "private": true,
+  "version": "0.1.0-rc.1",
+  "description": "Trail — AI-native change-control. Schema + post-hoc capture + interactive review for AI-assisted PRs. Apache-2.0 schema; open-core product.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "audit:trail": "pnpm --filter @synapti/trail-audit start"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": ">=0.25.0"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/synaptiai/trail"
+  },
+  "keywords": [
+    "ai",
+    "change-control",
+    "pr",
+    "code-review",
+    "claude-code",
+    "protocol",
+    "schema"
+  ]
+}

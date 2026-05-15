@@ -1,0 +1,63 @@
+name: actionlint
+
+# Lint all GitHub Actions workflow files for syntax errors, mis-pinned actions,
+# shellcheck issues in `run:` scripts, and undefined-context references. Catches
+# typos before a tag push burns a 60-minute matrix on a broken release.yml.
+#
+# Trigger scope is intentionally narrow: only `.github/workflows/**`. The ui
+# and Rust quality gates live in ui-quality-gates.yml; running them here would
+# duplicate CI minutes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: Lint workflow files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # Cycle-3 C3-S-SEC-1 + C3-V1 (consensus): pin checkout to the same SHA
+      # release.yml uses. The cycle-1.5 supply-chain hardening discipline
+      # applies to every third-party Action in this repo, not just the
+      # publish workflow.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint (rhysd/actionlint @03d0035 = v1.7.7)
+        # Cycle-3 C3-S-SEC-2 + C3-S-CR-2 (consensus): the prior version of
+        # this step fetched the downloader script via a tag-referenced URL
+        # (`.../v1.7.7/scripts/...`). GitHub tags are MUTABLE — a force-push
+        # by a compromised maintainer or an account takeover could swap the
+        # script contents under us. The downloader script's own checksum
+        # verification is keyed off the same release, so a same-attacker
+        # re-tag would alter both the script and the .sha256 file in
+        # lockstep. SHA-pinning the URL closes the moving-tag class.
+        #
+        # The script then downloads the actionlint binary archive from the
+        # `v1.7.7` release and verifies its SHA-256 against GitHub's
+        # release-published checksum file. That layer defeats MITM but not
+        # an upstream-account takeover; v0.1.x will harden further via
+        # signature verification or `go install` with module-proxy auth.
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/03d0035246f3e81f36aed592ffb4bebf33a03106/scripts/download-actionlint.bash) 1.7.7
+
+      - name: Run actionlint on all workflows
+        # `-color` keeps the GitHub Actions log readable. No path arg = scan
+        # all `.github/workflows/*.{yml,yaml}` files (actionlint's default).
+        run: ./actionlint -color

@@ -1,0 +1,47 @@
+{
+  "_doc": "Synthetic pattern-shape fixtures for Layer 3 scanner tests. Each entry pairs a bundled-pattern name with a `parts` array; tests concatenate `parts.join('')` at runtime to build the test string. NO real secret literal exists here — the `parts` use public protocol prefixes (from bundled YAML) plus filler chars. The split-into-parts encoding additionally prevents naive secret-scanners from matching on this file.",
+  "fixtures": {
+    "aws-access-key": ["AK", "IA", "IOSFODNN7EX", "AMPL", "X"],
+    "aws-secret-key": ["aws_secret_access_key=", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "github-token": ["gh", "p_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "github-fine-grained-token": [
+      "github_pat_",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "openai-api-key": ["sk", "-", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "anthropic-api-key": ["sk", "-ant-", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "stripe-key": ["sk_test_", "aaaaaaaaaaaaaaaaaaaaaaaa"],
+    "private-key-pem": [
+      "-----",
+      "BEGIN",
+      " RSA ",
+      "PRIVATE",
+      " KEY",
+      "-----\nABCDEF\n-----",
+      "END",
+      " RSA ",
+      "PRIVATE",
+      " KEY",
+      "-----"
+    ],
+    "slack-token": ["xo", "xb-", "aaaaaaaaaaaaaaa"],
+    "google-api-key": ["AI", "za", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "sentry-dsn": ["https://", "0123456789abcdef0123456789abcdef", "@host.example/1"],
+    "npm-token": ["np", "m_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "cloudflare-api-token": ["cf_api_token=", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "postgres-url": ["postgres", "ql://", "u:", "p@db:5432/x"],
+    "mysql-url": ["my", "sql://", "u:", "p@db:3306/x"],
+    "mongodb-url": ["mongo", "db://", "u:", "p@db:27017/x"],
+    "redis-url": ["red", "is://", "u:", "p@db:6379/0"],
+    "url-userinfo": ["https://", "user:", "opaquevalue", "@host.example/r"],
+    "bearer-token-header": ["Auth", "orization: ", "Bear", "er ", "aaaaaaaaaaaaaaaaaaaa"],
+    "jwt": [
+      "eyJ",
+      "aaaaaaaaaaaaaaaaaaaa",
+      ".eyJ",
+      "aaaaaaaaaaaaaaaaaaaa",
+      ".",
+      "aaaaaaaaaaaaaaaaaaaa"
+    ]
+  }
+}

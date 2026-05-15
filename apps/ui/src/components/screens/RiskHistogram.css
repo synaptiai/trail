@@ -1,0 +1,73 @@
+.risk-histogram {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-5);
+  align-items: end;
+  padding: var(--space-3) 0;
+}
+
+.risk-histogram__bin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.risk-histogram__bin--low { --bin-color: var(--risk-low); }
+.risk-histogram__bin--med { --bin-color: var(--risk-med); }
+.risk-histogram__bin--high { --bin-color: var(--risk-high); }
+.risk-histogram__bin--crit { --bin-color: var(--risk-crit); }
+
+/* Track is the full-height channel; fill is the level-tinted bar. Empty
+   bins render only the 1px hairline track per B3 §4.3.1. Track height
+   uses a tokenised dimension so density modes can override later. */
+.risk-histogram__track {
+  position: relative;
+  height: var(--size-row-comfortable);
+  border-bottom: var(--border-width-hairline) solid var(--border-subtle);
+  display: flex;
+  align-items: flex-end;
+}
+
+.risk-histogram__fill {
+  width: 100%;
+  height: var(--bar-fill-pct, 0%);
+  background: color-mix(in srgb, var(--bin-color) 70%, transparent);
+  border-top: var(--border-width-thick) solid var(--bin-color);
+  transition: height var(--motion-base) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .risk-histogram__fill {
+    transition: none;
+  }
+}
+
+.risk-histogram__caption {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--bin-color);
+}
+
+.risk-histogram__glyph {
+  width: var(--size-glyph);
+  height: var(--size-glyph);
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.risk-histogram__label {
+  color: var(--bin-color);
+  min-width: 4ch;
+}
+
+.risk-histogram__count {
+  color: var(--text-primary);
+  margin-left: auto;
+}
+
+/* CRIT glyph stroke-on-fill — defense-in-depth from Risk.css */
+.risk-histogram__bin--crit .risk-histogram__glyph svg line {
+  stroke: var(--bg);
+}

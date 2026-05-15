@@ -1,0 +1,27 @@
+.packet-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.packet-view__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5);
+  margin-bottom: var(--space-3);
+}
+
+.packet-view__audit-chip {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width-hairline) solid var(--accent);
+  border-radius: var(--radius-1);
+  color: var(--accent-text);
+  background: var(--surface);
+}
+
+.packet-view__claim-list {
+  display: flex;
+  flex-direction: column;
+}

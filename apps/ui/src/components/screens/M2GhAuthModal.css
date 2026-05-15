@@ -1,0 +1,39 @@
+/**
+ * M2 — GitHub authentication modal (B4 §7.2).
+ */
+.m2__lede {
+  margin: 0 0 var(--space-3) 0;
+  color: var(--text-primary);
+}
+
+.m2__cmd-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.m2__cmd {
+  flex: 1;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-2);
+  color: var(--text-primary);
+  user-select: text;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.m2__instruction {
+  margin: 0 0 var(--space-3) 0;
+  color: var(--text-secondary);
+}
+
+.m2__error-detail {
+  display: block;
+  word-break: break-word;
+  white-space: pre-wrap;
+  color: var(--text-primary);
+}

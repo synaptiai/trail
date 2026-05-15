@@ -1,0 +1,252 @@
+.sidebar {
+  --trail-dim-opacity: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-right: var(--border-width-hairline) solid var(--border-subtle);
+  background: var(--surface);
+  width: var(--size-sidebar);
+  min-width: 0;
+  /* height: 100% chains the parent grid cell's height down to the
+     sidebar so the inner __body's flex: 1 1 auto + min-height: 0 can
+     constrain the __list's overflow-y: auto scroll. Without an explicit
+     height on .sidebar, the grid cell sizes to the sidebar's intrinsic
+     content (44000px for 1000 packets), defeating virtualization. */
+  height: 100%;
+  overflow: hidden;
+  transition: opacity var(--motion-base) var(--ease-out);
+}
+
+/* Dim-trail motion (B3 §8.3, gh#8 criterion 3): on filter apply, the
+   non-matching subtree fades to 0.30 opacity. Reduced-motion is honoured
+   globally via tokens.css `@media (prefers-reduced-motion)`. */
+.sidebar.is-dim-trail .sidebar__list {
+  opacity: 0.3;
+  transition: opacity var(--motion-base) var(--ease-out);
+}
+
+.sidebar.is-pending .sidebar__list { opacity: 0.6; }
+
+.sidebar__skip-link {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-radius: var(--radius-1);
+  text-decoration: none;
+  z-index: 20;
+  /* off-screen until focused — WCAG 2.1 2.4.1 / B4 §3 a11y. */
+  transform: translateY(-200%);
+  opacity: 0;
+  transition: transform var(--motion-short) var(--ease-out), opacity var(--motion-short) var(--ease-out);
+}
+.sidebar__skip-link:focus, .sidebar__skip-link:focus-visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.sidebar__brand {
+  padding: var(--space-3) var(--space-5) var(--space-2);
+  color: var(--text-tertiary);
+}
+
+.sidebar__pin {
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sidebar__section-heading {
+  margin: 0;
+  color: var(--text-tertiary);
+}
+
+.sidebar__pin-empty {
+  color: var(--text-tertiary);
+  margin: 0;
+}
+
+.sidebar__pin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sidebar__pin-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.sidebar__pin-button {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-1);
+  border: var(--border-width-hairline) solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  min-height: var(--size-row-compact);
+}
+.sidebar__pin-button:hover { background: var(--surface-raised); border-color: var(--border-subtle); }
+.sidebar__pin-button:disabled { color: var(--text-tertiary); cursor: not-allowed; }
+
+.sidebar__pin-name { color: var(--text-primary); }
+.sidebar__pin-meta { color: var(--text-tertiary); }
+
+.sidebar__pin-unpin {
+  background: transparent;
+  border: 0;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1);
+}
+.sidebar__pin-unpin:hover { color: var(--text-primary); background: var(--surface-raised); }
+
+.sidebar__filter {
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sidebar__body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  /* Critical: min-height: 0 lets the body shrink below its content's
+     intrinsic height so the inner __list (overflow-y: auto) actually
+     scrolls. Without this, the sidebar grows to hold all 1000 row
+     spacers (44000px), defeating virtualization. */
+  min-height: 0;
+  /* Also critical: ensure the sidebar root constrains height. The sidebar
+     is the flex child of .app__main grid cell which has min-height: 0,
+     but the .sidebar itself must also enforce a max bound on its inner
+     content. height: 100% would chain the constraint up correctly. */
+  padding-bottom: var(--space-5);
+}
+
+.sidebar__loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-5) var(--space-5);
+}
+
+.sidebar__list {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  position: relative;
+  outline: none;
+}
+
+.sidebar__list:focus-visible {
+  /* The list owns focus while keyboard navigation is active. The active
+     row's button receives the visible focus ring via its own
+     :focus-visible; the listbox itself shows a subtle highlight. */
+  box-shadow: inset 0 0 0 var(--border-width-hairline) var(--accent);
+}
+
+.sidebar__list-spacer {
+  position: relative;
+  width: 100%;
+  /* Total scrollable height set inline via style={{ height }}. */
+}
+
+.sidebar__row {
+  height: var(--size-row-comfortable);
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-4) 0 var(--space-5);
+}
+
+.sidebar__row.is-active .sidebar__row-button {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+}
+
+.sidebar__cluster-header {
+  position: absolute;
+  /* Cluster headers sit above their first row; keep them visually distinct
+     without breaking the virtualization flow (each is in absolute layer). */
+  transform: translateY(-1.5em);
+  color: var(--text-tertiary);
+  padding: var(--space-1) 0;
+  pointer-events: none;
+}
+
+.sidebar__row-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  height: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-1);
+  border: var(--border-width-hairline) solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar__row-button:hover {
+  border-color: var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.sidebar__row-name {
+  color: var(--text-primary);
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar__row-age { color: var(--text-tertiary); flex: 0 0 auto; }
+
+.sidebar__row-badge { flex: 0 0 auto; }
+.sidebar__row-redact { flex: 0 0 auto; }
+
+.sidebar__row-pin {
+  position: absolute;
+  right: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: 0;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1);
+  opacity: 0;
+  transition: opacity var(--motion-short) var(--ease-out);
+}
+.sidebar__row:hover .sidebar__row-pin,
+.sidebar__row.is-active .sidebar__row-pin,
+.sidebar__row-pin:focus-visible { opacity: 1; }
+.sidebar__row-pin:hover { color: var(--accent); }
+
+.sidebar__reset-button {
+  background: transparent;
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-1);
+  cursor: pointer;
+}
+.sidebar__reset-button:hover { border-color: var(--accent); }

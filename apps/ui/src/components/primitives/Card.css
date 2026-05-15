@@ -1,0 +1,11 @@
+.card {
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-0);
+  background: var(--surface);
+  color: var(--text-primary);
+}
+
+.card--elevated { background: var(--surface-raised); }
+
+.card--comfortable { padding: var(--space-6); }
+.card--compact { padding: var(--space-4); }

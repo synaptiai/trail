@@ -1,0 +1,71 @@
+{
+  "name": "@synapti/trail-audit",
+  "version": "0.1.0-rc.1",
+  "description": "Trail Layer 3: pre-commit audit. Re-scans staged .trail/ packets for unredacted secret patterns before they land in git.",
+  "license": "Apache-2.0",
+  "author": "Synapti AI",
+  "homepage": "https://github.com/synaptiai/trail#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synaptiai/trail.git",
+    "directory": "apps/audit"
+  },
+  "bugs": {
+    "url": "https://github.com/synaptiai/trail/issues"
+  },
+  "keywords": [
+    "ai",
+    "claude-code",
+    "change-control",
+    "pr",
+    "redaction",
+    "audit",
+    "pre-commit",
+    "secrets-scan",
+    "cli",
+    "trail"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "trail-audit": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src test",
+    "lint:fix": "biome check --write src test",
+    "start": "node ./dist/cli.js",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@synapti/trail-capture": "workspace:^",
+    "commander": "^12.1.0",
+    "simple-git": "^3.27.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "vitest": "^2.1.0"
+  }
+}

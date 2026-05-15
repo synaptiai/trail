@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "outDir": "./dist",
+    "noEmit": true,
+    "types": ["vite/client", "node", "vitest/globals", "@testing-library/jest-dom"],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "baseUrl": ".",
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src", "tests", "scripts", "*.config.ts", "*.config.mjs"],
+  "exclude": ["dist", "node_modules", "src-tauri/target", "storybook-static"]
+}

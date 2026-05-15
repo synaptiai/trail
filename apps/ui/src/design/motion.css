@@ -1,0 +1,75 @@
+/*
+ * Motion patterns from B3 §8.3.
+ *
+ * Inscribe-in (signature reveal) — claim cards, timeline rows.
+ * Stamp (decision committed) — accept/override.
+ * Pulse-warning (J12 / E5) — tamper / heavy redaction.
+ * Dim-trail (filter applied) — trail browser non-matches fade to 0.30.
+ * Skeleton-shimmer — loading placeholders.
+ *
+ * @media (prefers-reduced-motion) caps duration to ~0; the global reduced-motion
+ * override in tokens.css covers all but the pulse-warning ⚠ NEW chip semantic
+ * fallback (per B3 §8.4) which is rendered by the Banner primitive directly.
+ */
+
+@keyframes inscribe-in {
+  from { opacity: 0; transform: translateY(var(--space-2)); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes stamp {
+  0%   { transform: translateY(0); border-color: var(--border-subtle); }
+  40%  { transform: translateY(var(--border-width-hairline)); border-color: var(--accent); }
+  100% { transform: translateY(0); border-color: var(--border-subtle); }
+}
+
+@keyframes pulse-warning {
+  0%, 100% { box-shadow: 0 0 0 var(--border-width-hairline) var(--border-subtle), 0 0 0 0 transparent; }
+  50%      { box-shadow: var(--shadow-warning); }
+}
+
+@keyframes dim-trail {
+  from { opacity: 1; }
+  to   { opacity: 0.30; }
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position: 200% 0; }
+}
+
+@keyframes horizon-inscribe {
+  from { transform: scaleX(0); transform-origin: left center; }
+  to   { transform: scaleX(1); transform-origin: left center; }
+}
+
+.motion-inscribe-in {
+  animation: inscribe-in var(--motion-short) var(--ease-record);
+}
+
+.motion-stamp {
+  animation: stamp var(--motion-base) var(--ease-record);
+}
+
+.motion-pulse-warning {
+  animation: pulse-warning calc(var(--motion-long) * 2) var(--ease-record) 0s 2;
+}
+
+.motion-dim-trail {
+  transition: opacity var(--motion-short) var(--ease-out);
+}
+
+.motion-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface) 0%,
+    var(--surface-raised) 50%,
+    var(--surface) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+.motion-horizon-inscribe {
+  animation: horizon-inscribe var(--motion-long) var(--ease-record);
+}

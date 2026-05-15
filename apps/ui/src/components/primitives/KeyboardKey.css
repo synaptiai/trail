@@ -1,0 +1,12 @@
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--size-glyph-icon);
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-strong);
+  border-bottom-width: var(--border-width-thick);
+  border-radius: var(--radius-1);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}

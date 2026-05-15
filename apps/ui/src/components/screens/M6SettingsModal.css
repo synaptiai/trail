@@ -1,0 +1,105 @@
+/**
+ * M6 settings modal — dense form surface inside the lg modal width.
+ * Uses tokens only; no raw color or spacing literals.
+ */
+.m6__loading,
+.m6__empty {
+  color: var(--text-secondary);
+  margin: 0;
+}
+.m6__error {
+  color: var(--risk-crit);
+  margin: 0;
+}
+
+.m6__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.m6__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.m6__field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.m6__field legend {
+  margin-bottom: var(--space-2);
+}
+
+.m6__radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: var(--space-4);
+}
+
+.m6__hint {
+  color: var(--text-secondary);
+}
+
+.m6__pinned {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.m6__pinned-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-width-hairline) solid var(--border-subtle);
+}
+
+.m6__pinned-item:last-child {
+  border-bottom: none;
+}
+
+.m6__field input[type='text'],
+.m6__field input[type='number'] {
+  font-size: var(--font-size-body);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  color: var(--text-primary);
+}
+
+/**
+ * Capture-CLI panel — Sprint 4 cycle-1.5 F3 fix.
+ * Inline status row below the path input shows ✓ verified or ✗ probe error.
+ * Buttons row gates "Save (verified)" until a successful probe matches the
+ * draft path.
+ */
+.m6__capture-actions {
+  display: flex;
+  flex-direction: row;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.m6__capture-status {
+  margin: 0;
+  min-height: var(--space-5);
+}
+
+.m6__capture-status--ok {
+  color: var(--risk-low);
+}
+
+.m6__capture-status--err {
+  color: var(--risk-crit);
+}

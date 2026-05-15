@@ -1,0 +1,119 @@
+[package]
+name = "trail-ui"
+version = "0.1.0-rc.1"
+description = "Trail Layer 3 — Tauri 2.x desktop shell"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "trail-ui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = { version = "2" }
+# rusqlite is the runtime SQL substrate for v0.1. The libSQL crate is the
+# eventual target (per B5 §2.1 — `Turso/libSQL embedded`); rusqlite is the
+# practical local-only subset that ships in OSS Trail today (single-process,
+# single-user; no Turso cloud sync until v0.2). When the libSQL Rust client
+# stabilises its synchronous API we swap this dependency without changing
+# call sites — rusqlite and libSQL share their SQL dialect (modulo BEGIN
+# IMMEDIATE, which both honour). Sprint 2 (gh#8) wires the schema apply +
+# query path; Sprint 4 (gh#3 audit) layers the audit-log writer on the same
+# connection pool.
+#
+# `bundled` feature ships SQLite source so the desktop binary does not
+# depend on the user's system libsqlite3 — a cross-platform packaging
+# requirement called out in B5 §2.3 (gaps closed). `time` brings tinyvec
+# transit for ISO-8601 timestamp columns.
+rusqlite = { version = "0.31", features = ["bundled", "time"] }
+# `dirs` resolves the OS-specific home directory for `~/.trail/settings.json`
+# (B5 §6.6). std::env::var("HOME") is not portable to Windows; `dirs::home_dir()`
+# is the de-facto crate. `dirs-next` is unmaintained; `dirs` 5.x is the
+# active fork.
+dirs = "5"
+
+# tauri-plugin-shell pinned to an exact patch version per PR #6 cycle-2
+# review N6 (P2 testing-coverage-security consensus MEDIUM):
+#
+# The plugin's scope.rs (lines 270-290 at v2.3.5) implements the
+# under-supply-rejected / over-supply-silently-dropped semantic that
+# B5 §6.2 + architecture.md §3.3 rely on. A future minor or patch
+# version could change the iteration order or tighten/loosen the
+# fallthrough — silently breaking the security model. Pinning `=2.3.5`
+# means a deliberate human decision is required to upgrade, and the
+# integration tests under tests/shell_plugin_contract.rs rebuild against
+# the new code at that point.
+#
+# The behavior contract this pin protects:
+#   1. Under-supply (incoming args.len() < declared.len()) → MissingVar
+#      error → IPC returns ProgramNotAllowed (no subprocess spawned).
+#   2. Over-supply (incoming args.len() > declared.len()) → only the
+#      first declared.len() args reach the subprocess (extras dropped).
+#   3. Per-arg validator regex must match (anchored `^...$`); failure
+#      returns Validation error → IPC returns ProgramNotAllowed.
+#
+# When upgrading: re-read scope.rs in the new crate, refresh
+# architecture.md §3.3 + this comment block, and confirm the
+# tests/shell_plugin_contract.rs integration tests still pass.
+tauri-plugin-shell = { version = "=2.3.5" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+notify = "6"
+notify-debouncer-full = "0.3"
+tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "macros"] }
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ulid = { version = "1", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+# Sprint 4 (gh#11) — saga + Layer 2 scan + watcher need:
+#   serde_yaml: parse / serialize packet YAML for the in-Rust saga (B5 §3.1
+#     steps 2-4). Locked at 0.9.34 (the last release; the crate is now in
+#     maintenance mode but its mapping-preserving Value type is still the
+#     ergonomic Rust YAML choice). v0.1's saga only mutates approval_trail
+#     and (for override_risk) one nested claim field; comment preservation
+#     is acceptable to lose given we never re-read those YAML files for
+#     comments and the schema does not pin key order.
+#   regex: Layer 2 scan against bin/trail-redaction-patterns.yml. Promoted
+#     from dev-dep so the saga's strict-redaction gate (B5 §3.1 step 3-4)
+#     can run in production builds.
+serde_yaml = "0.9"
+regex = "1"
+
+[dev-dependencies]
+# Used by shell_allowlist regression tests (mirrors the validator regexes
+# declared in capabilities/default.json so a divergence is caught in CI).
+# Sprint 4: regex is now a main dep but kept here for clarity that the
+# shell_allowlist tests still consume it.
+# Tauri's `test` feature exposes mock_builder() + assert_ipc_response() —
+# required by tests/shell_plugin_contract.rs (cycle-2 N6) to boot the
+# plugin and exercise enforcement semantic via real IPC, not via parallel-
+# maintained regex constants.
+tauri = { version = "2", features = ["test"] }
+# Needed inside integration tests to register the plugin under test (the
+# whole point of N6 is that we boot the actual shell plugin and verify it,
+# not a mock of it).
+tauri-plugin-shell = { version = "=2.3.5" }
+# JSON parsing in integration tests (load capabilities/default.json and
+# extract validator regexes per cycle-2 N28).
+serde_json = "1"
+# Sprint 4: tempfile for saga + watcher tests. Each test creates a fresh
+# .trail/ scratch directory so file-system effects are observable without
+# polluting the user's home or repo state.
+tempfile = "3"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# Enables a guarded `seed_stress_packets` IPC + the matching libSQL helper so
+# the Playwright E2E (gh#8 criterion 5) can boot the desktop with 1000 fake
+# packets pre-seeded. Gated separately from `debug_assertions` so a release
+# build CAN opt in (e.g., for a perf-bench packaged binary) without flipping
+# debug-mode globally.
+test-fixtures = []

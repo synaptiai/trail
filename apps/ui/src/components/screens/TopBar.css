@@ -1,0 +1,19 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-6);
+  background: var(--bg);
+  border-bottom: var(--border-width-hairline) solid var(--border-subtle);
+}
+
+.topbar__brand { display: inline-flex; align-items: center; gap: var(--space-3); }
+.topbar__mark { color: var(--accent-text); }
+
+.topbar__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.topbar__hint { color: var(--text-tertiary); }

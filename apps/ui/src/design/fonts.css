@@ -1,0 +1,62 @@
+/*
+ * Font face declarations for Trail's three OFL families:
+ *   Newsreader (Production Type)  — display + emphasis
+ *   Public Sans (USWDS)           — body + UI
+ *   Commit Mono (Eigil Nikolajsen) — code, IDs, hashes, risk labels
+ *
+ * Self-hosted under /fonts/ for Tauri offline mode. License files ship in
+ * the same directory. SHA-256 integrity is verified at startup via
+ * font-integrity.json (B3 §15.1).
+ */
+
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("/fonts/Newsreader[opsz,wght].woff2") format("woff2-variations"),
+       url("/fonts/Newsreader[opsz,wght].woff2") format("woff2");
+  font-variation-settings: "opsz" 14;
+}
+
+@font-face {
+  font-family: "Public Sans";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/PublicSans[wght].woff2") format("woff2-variations"),
+       url("/fonts/PublicSans[wght].woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Commit Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/CommitMono-400-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Commit Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/CommitMono-700-Bold.woff2") format("woff2");
+}
+
+/*
+ * Fallback families used when font integrity check fails (per B3 §15.1).
+ * Components reference these custom-property fallbacks via the `--font-*`
+ * variables so a runtime swap is a single attribute toggle on <html>.
+ */
+:root {
+  --font-display: "Newsreader", Georgia, "Iowan Old Style", serif;
+  --font-ui: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Commit Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+[data-font-fallback="true"] {
+  --font-display: Georgia, "Iowan Old Style", serif;
+  --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}

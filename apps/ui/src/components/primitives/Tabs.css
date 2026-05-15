@@ -1,0 +1,73 @@
+.tabs { display: flex; }
+.tabs--horizontal { flex-direction: column; }
+.tabs--vertical { flex-direction: row; gap: var(--space-5); }
+
+.tabs__list--horizontal {
+  display: flex;
+  flex-direction: row;
+  gap: var(--space-5);
+  border-bottom: var(--border-width-hairline) solid var(--border-subtle);
+  padding-bottom: 0;
+}
+
+.tabs__list--vertical {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-right: var(--border-width-hairline) solid var(--border-subtle);
+  padding-right: var(--space-4);
+  min-width: var(--size-tab-rail);
+}
+
+.tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-1);
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+}
+
+.tabs__tab[disabled] { color: var(--text-tertiary); cursor: not-allowed; }
+.tabs__tab:hover:not([disabled]) { color: var(--text-primary); }
+
+.tabs__tab--active { color: var(--text-primary); }
+
+.tabs__list--emphasize .tabs__tab--active { font-weight: 600; }
+
+/* Underline indicator for horizontal active tab */
+.tabs__list--horizontal .tabs__tab--active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * var(--border-width-hairline));
+  height: var(--border-width-hairline);
+  background: var(--accent);
+}
+
+/* Left-rule indicator for vertical active tab */
+.tabs__list--vertical .tabs__tab--active::before {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--border-width-hairline));
+  top: 0;
+  bottom: 0;
+  width: var(--border-width-thick);
+  background: var(--accent);
+  border-radius: var(--radius-1);
+}
+
+.tabs__tab:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 var(--border-width-thick) var(--focus-ring-offset),
+    0 0 0 var(--border-width-focus-ring) var(--focus-ring);
+}
+
+.tabs__panel { flex: 1 1 auto; padding: var(--space-5) 0; outline: none; }
+.tabs--vertical .tabs__panel { padding-left: var(--space-4); }

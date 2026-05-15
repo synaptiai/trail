@@ -1,0 +1,41 @@
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  background: var(--surface);
+}
+
+.banner--warning {
+  border-color: var(--risk-med);
+  background: var(--risk-med-bg);
+}
+
+.banner--alert {
+  border-color: var(--risk-high);
+  background: var(--risk-high-bg);
+}
+
+.banner__content { flex: 1 1 auto; min-width: 0; }
+.banner__title { margin: 0; display: inline-flex; align-items: center; gap: var(--space-3); }
+.banner__body { margin-top: var(--space-2); color: var(--text-secondary); }
+
+.banner__new-badge {
+  background: var(--risk-high);
+  color: var(--text-on-accent);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-1);
+}
+
+.banner__action { flex: 0 0 auto; align-self: center; }
+
+.banner__dismiss {
+  flex: 0 0 auto;
+  width: var(--size-glyph-lg);
+  height: var(--size-glyph-lg);
+  color: var(--text-tertiary);
+  border-radius: var(--radius-1);
+}
+.banner__dismiss:hover { color: var(--text-primary); background: var(--surface-raised); }

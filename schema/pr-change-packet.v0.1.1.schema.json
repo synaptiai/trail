@@ -1,0 +1,827 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trail.dev/schema/pr-change-packet/v0.1.1",
+  "title": "Trail PR Change Packet v0.1.1",
+  "description": "Canonical JSON Schema for the Trail PR Change Packet v0.1.1. Generated from schema/pr-change-packet.v0.1.1.yml (the authoritative artifact). Consumed by the TS port via Ajv (Phase 1 §7 validation, two-pass: structural + cross-reference). Apache-2.0 (locked at L1 regulatory gate). All v0.1.1 additions are non-breaking vs v0.1; existing v0.1 producers/consumers remain valid.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_version",
+    "_meta",
+    "pr",
+    "task_intent",
+    "agent_session",
+    "diff_summary",
+    "commands_run",
+    "test_evidence",
+    "provenance",
+    "summary"
+  ],
+  "properties": {
+    "packet_version": {
+      "description": "Schema version identifier. v0.1.1 is the active Phase 1 protocol; v0.1 is accepted for backward compatibility. If any v0.1.1-only field is present (see §7 schema validation rules), packet_version MUST be \"0.1.1\".",
+      "type": "string",
+      "enum": ["0.1", "0.1.1"]
+    },
+    "_meta": {
+      "description": "Packet identity + generator metadata. Phase 1 spec §4 field-level mapping.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_id",
+        "generated_at",
+        "generator",
+        "schema_url",
+        "capture_method"
+      ],
+      "properties": {
+        "packet_id": {
+          "description": "ULID generated at packet finalization (NOT session start). Crockford base32, 26 chars.",
+          "type": "string",
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "generated_at": {
+          "description": "ISO 8601 with +00:00 suffix (NOT Z). Format: YYYY-MM-DDTHH:mm:ss.sss+00:00.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "generator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version"],
+          "properties": {
+            "name": {
+              "description": "Constant \"trail\" in v0.1.x.",
+              "type": "string",
+              "const": "trail"
+            },
+            "version": {
+              "description": "Trail CLI version that produced this packet (from package.json#version of @trail/capture).",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "schema_url": {
+          "description": "Relative path: \"schema/pr-change-packet.v0.1.1.yml\" (URL form deferred to v0.2+).",
+          "type": "string",
+          "minLength": 1
+        },
+        "capture_method": {
+          "description": "NEW v0.1.1. \"post_hoc\" for Phase 1; v0.2 may add \"hook\".",
+          "type": "string",
+          "enum": ["post_hoc"]
+        },
+        "parent_packet_id": {
+          "description": "NEW v0.1.1 (AB-6). ULID of the prior packet in this session's re-capture chain. Null for the first capture (N=1). Phase 1 reads packet-(N-1).yml._meta.packet_id at write time. Phase 2 UI uses this to compute approval-state carry-forward across re-captures.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+          ]
+        }
+      }
+    },
+    "pr": {
+      "description": "Pull request context. Populated by simple-git in v0.1.1.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "repository",
+        "branch",
+        "base_branch",
+        "pr_number",
+        "author"
+      ],
+      "properties": {
+        "provider": {
+          "description": "MVP: github only; gitlab/bitbucket deferred to v0.2+.",
+          "type": "string",
+          "enum": ["github"]
+        },
+        "repository": {
+          "description": "\"owner/repo\". Userinfo MUST be stripped before storage (A4.5 SEC-2; A4.7 R-SEC-4).",
+          "type": "string"
+        },
+        "branch": {
+          "description": "Current branch from simple-git.",
+          "type": "string"
+        },
+        "base_branch": {
+          "description": "Merge target. Heuristic: origin/main, origin/master, then local main/master. Empty if none resolves.",
+          "type": "string"
+        },
+        "pr_number": {
+          "description": "Nullable. Populated only when GitHub App ships (v0.2+). Null in Phase 1.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 1 }
+          ]
+        },
+        "author": {
+          "description": "Git committer email (git config user.email). PII; see §1.1.",
+          "type": "string"
+        }
+      }
+    },
+    "task_intent": {
+      "description": "What the work was supposed to do. Phase 1 spec §4.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_type",
+        "source_ref",
+        "summary",
+        "acceptance_criteria"
+      ],
+      "properties": {
+        "source_type": {
+          "description": "Origin classification of the task. Phase 1 default: \"prompt\".",
+          "type": "string",
+          "enum": ["issue", "prompt", "manual", "ticket", "spec", ""]
+        },
+        "source_ref": {
+          "description": "URL or local ref (e.g., \"ISSUE-42\", file path, or \"PROMPT-001\"). Empty if no prompt captured.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "One-line task summary. ≤200 chars after redact + whitespace collapse.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "acceptance_criteria": {
+          "description": "Optional list. Empty in v0.1 (Daniel's solo workflow doesn't always have these).",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "agent_session": {
+      "description": "How the work was produced. Phase 1 spec §4.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "model",
+        "models",
+        "started_at",
+        "ended_at",
+        "session_id",
+        "transcript_summary",
+        "prompts",
+        "redaction_metadata"
+      ],
+      "properties": {
+        "tool": {
+          "description": "MVP: claude-code only; cursor/codex/aider deferred to v0.2+.",
+          "type": "string",
+          "enum": ["claude-code"]
+        },
+        "model": {
+          "description": "Last assistant model seen in transcript. Kept for back-compat with v0.1; deprecated in favor of models[].",
+          "type": "string"
+        },
+        "models": {
+          "description": "NEW v0.1.1. Unique model strings, in first-encounter order. Sessions with model switches (e.g., /effort changes) populate multiple.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "started_at": {
+          "description": "First ISO 8601 timestamp in transcript. MUST be <= ended_at (parsed as Date, not lex compare).",
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "description": "Last ISO 8601 timestamp in transcript.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "session_id": {
+          "description": "Filename of the .jsonl minus extension. Always present.",
+          "type": "string",
+          "minLength": 1
+        },
+        "transcript_summary": {
+          "description": "Bullet list, NOT full transcript. Phase 1 mechanical: deduped tool_use names + first sentence of first assistant text block. LLM-augmented when available.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "prompts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["initial", "followups"],
+          "properties": {
+            "initial": {
+              "description": "REDACTED. Pipeline: tag-strip (<[^>]+>) → empty-check → 1200-char truncate → redact.",
+              "type": "string"
+            },
+            "followups": {
+              "description": "REDACTED. Same pipeline. Empty-after-strip messages skipped (no PROMPT-NNN allocated).",
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "redaction_metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pattern_set_version",
+            "redactions_applied",
+            "redactions_by_pattern",
+            "validation_errors",
+            "skipped_files"
+          ],
+          "properties": {
+            "pattern_set_version": {
+              "description": "Version of bin/trail-redaction-patterns.yml. REQUIRED non-empty; no fallback. Format X.Y.Z (optionally v-prefixed).",
+              "type": "string",
+              "pattern": "^v?\\d+\\.\\d+\\.\\d+$"
+            },
+            "pattern_set_origin": {
+              "description": "NEW v0.1.1 (A4.7 R-SEC-1). \"bundled\" when default trail-redaction-patterns.yml is in use; \"user-supplied\" when --patterns <path> was passed. Integrity signal — pattern_set_version is user-forgeable when origin != \"bundled\".",
+              "type": "string",
+              "enum": ["bundled", "user-supplied"]
+            },
+            "redactions_applied": {
+              "description": "Total count across all captured fields.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "redactions_by_pattern": {
+              "description": "{pattern_name: count}, alphabetically sorted for determinism.",
+              "type": "object",
+              "additionalProperties": { "type": "integer", "minimum": 0 }
+            },
+            "validation_errors": {
+              "description": "Layer 2 catches; one entry per pattern (NOT per match). SHOULD be empty in a healthy packet.",
+              "type": "array",
+              "items": { "$ref": "#/$defs/redaction_validation_error" }
+            },
+            "skipped_files": {
+              "description": "Files where memory-only snapshot was skipped (size cap; see §9).",
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "diff_summary": {
+      "description": "What changed in the code. Populated via simple-git in v0.1.1.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_sha",
+        "head_sha",
+        "files_changed",
+        "lines_added",
+        "lines_deleted",
+        "modules_touched",
+        "semantic_changes"
+      ],
+      "properties": {
+        "base_sha": {
+          "description": "Git SHA-1 of the base ref (40 hex chars) or empty when undeterminable.",
+          "oneOf": [
+            { "type": "string", "const": "" },
+            { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+          ]
+        },
+        "head_sha": {
+          "description": "Git SHA-1 of the head ref (40 hex chars) or empty.",
+          "oneOf": [
+            { "type": "string", "const": "" },
+            { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+          ]
+        },
+        "files_changed": {
+          "description": "GIT DIFF STAT count (NOT count of distinct files touched by tool uses).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "lines_added": { "type": "integer", "minimum": 0 },
+        "lines_deleted": { "type": "integer", "minimum": 0 },
+        "modules_touched": {
+          "description": "Heuristic: deduped top-level dirs of changed files INSIDE repo root. Files outside repo (e.g., ~/.claude/projects/...) excluded. Metadata leak; see §1.1.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "semantic_changes": {
+          "description": "Human-readable list of WHAT changed. One entry per logical Edit/Write/MultiEdit tool use. IDs MUST be unique (cross-reference rule).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/semantic_change" }
+        }
+      }
+    },
+    "commands_run": {
+      "description": "Ledger of Bash tool uses. NOT full output. IDs MUST be unique. Phase 1: exit_code and duration_ms are constants.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "test_evidence": {
+      "description": "Tests detected via bin/trail-test-runners.yml patterns. Phase 1: exit codes locked at 0, so all detected tests land in passed[].",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "not_run"],
+      "properties": {
+        "passed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/test_entry" }
+        },
+        "failed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/test_entry" }
+        },
+        "not_run": {
+          "description": "Tests that exist but weren't executed.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/test_entry" }
+        }
+      }
+    },
+    "provenance": {
+      "description": "Who wrote what. Phase 1 emits constants for the three estimate fields.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorship",
+        "agent_touched_files",
+        "human_touched_files"
+      ],
+      "properties": {
+        "authorship": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ai_generated_estimate",
+            "human_modified_estimate",
+            "method"
+          ],
+          "properties": {
+            "ai_generated_estimate": {
+              "description": "Phase 1: constant \"high\".",
+              "type": "string",
+              "enum": ["high", "medium", "low", "unknown"]
+            },
+            "human_modified_estimate": {
+              "description": "Phase 1: constant \"unknown\".",
+              "type": "string",
+              "enum": ["high", "medium", "low", "unknown"]
+            },
+            "method": {
+              "description": "Phase 1: constant \"post-hoc-transcript\". Heuristic / hook modes deferred to v0.2.",
+              "type": "string",
+              "enum": [
+                "hook-tracked",
+                "heuristic",
+                "post-hoc-transcript",
+                "self-reported"
+              ]
+            }
+          }
+        },
+        "agent_touched_files": {
+          "description": "Files modified by Edit/Write/MultiEdit tool uses (deduped).",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "human_touched_files": {
+          "description": "Phase 1: always empty (mtime heuristic deferred to v0.2).",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "summary": {
+      "description": "THE LOAD-BEARING FIELD: claims with evidence refs. Every claim MUST have non-empty evidence_refs (cross-reference rule).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claims", "ungrounded_claim_count"],
+      "properties": {
+        "claims": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/claim" }
+        },
+        "ungrounded_claim_count": {
+          "description": "Populated by Trail; SHOULD be 0 for a healthy packet.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "approval_trail": {
+      "description": "AB-4 (NEW v0.1.1). Chronological, per-claim, per-decision history. Phase 1 (capture) emits an empty array; entries are appended by Phase 2 (UI) via the atomic-write saga (B5 §3) and mirrored into libSQL.approval_trail (B5 §7.1). Granularity: ONE entry per (claim_id, decision event); NOT a packet-level singleton. When non-empty, entries MUST be in chronological order; claim_id MUST resolve to a claim in this packet (by id OR stable_id) — verified by the cross-reference pass.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/approval_trail_entry" }
+    },
+    "posted_to_pr": {
+      "description": "AB-2 (NEW v0.1.1). Posted-to-PR history. Array (NOT singleton) — a packet may be posted multiple times across re-edits or re-pushes. Mirrors libSQL.posted_to_pr_history (B5 §7.1). Phase 1 emits an empty array; Phase 3b (gh CLI integration) appends entries on each successful post.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/posted_to_pr_entry" }
+    },
+    "redaction_audit": {
+      "description": "AB-8 (NEW v0.1.1). Per-pattern × per-layer breakdown of all redactions applied during this capture run. Mirrors libSQL.redaction_audit (B5 §7.1). Complements (does NOT replace) agent_session.redaction_metadata.redactions_by_pattern aggregate counts — the entries array is the authoritative breakdown by layer; the aggregate map is kept for back-compat and quick rollup.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern_set_version", "entries"],
+      "properties": {
+        "pattern_set_version": {
+          "description": "Mirrors agent_session.redaction_metadata.pattern_set_version. Format X.Y.Z (optionally v-prefixed).",
+          "type": "string",
+          "pattern": "^v?\\d+\\.\\d+\\.\\d+$"
+        },
+        "entries": {
+          "description": "Per-pattern × per-layer rows. MUST be sorted alphabetically by pattern_id, then by layer ascending (parity-locked, deterministic). Sum of entries[].count for layer == 1 MUST equal agent_session.redaction_metadata.redactions_applied (cross-check; Phase 1 invariant).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/redaction_audit_entry" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ulid": {
+      "description": "Crockford base32 ULID — 26 chars, alphabet 0-9 A-Z minus I L O U.",
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "iso8601": {
+      "description": "ISO 8601 timestamp with +00:00 suffix (NOT Z). Format enforced via JSON Schema 'date-time'.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "risk_level": {
+      "description": "Risk classification levels.",
+      "type": "string",
+      "enum": ["low", "med", "high", "crit"]
+    },
+    "redaction_validation_error": {
+      "description": "Layer 2 catch entry. One per pattern (NOT per match). Snippet is sha256(match).hexdigest()[:8] — exactly 8 hex chars; never the raw match.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "snippet"],
+      "properties": {
+        "pattern": {
+          "description": "Pattern name from bin/trail-redaction-patterns.yml.",
+          "type": "string",
+          "minLength": 1
+        },
+        "snippet": {
+          "description": "8 hex chars (4 bytes) — sha256 prefix; never raw match.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}$"
+        }
+      }
+    },
+    "semantic_change_id": {
+      "description": "Stable ID for a semantic change. Format: DIFF-NNN.",
+      "type": "string",
+      "pattern": "^DIFF-\\d{3,}$"
+    },
+    "command_id": {
+      "description": "Stable ID for a command. Format: CMD-NNN.",
+      "type": "string",
+      "pattern": "^CMD-\\d{3,}$"
+    },
+    "test_id": {
+      "description": "Stable ID for a test entry. Format: TEST-NNN.",
+      "type": "string",
+      "pattern": "^TEST-\\d{3,}$"
+    },
+    "claim_id": {
+      "description": "Stable ID for a claim. Format: CLAIM-NNN. Visible ordinal label; deterministic stability key is stable_id (see AB-5).",
+      "type": "string",
+      "pattern": "^CLAIM-\\d{3,}$"
+    },
+    "evidence_ref": {
+      "description": "Reference to evidence (DIFF-NNN, CMD-NNN, TEST-NNN, or PROMPT-NNN). Cross-reference pass (Phase 1 §7 pass 2) verifies each ref resolves to an existing ID.",
+      "type": "string",
+      "pattern": "^(DIFF|CMD|TEST|PROMPT)-\\d{3,}$"
+    },
+    "excerpt": {
+      "description": "Excerpt slice from a tool_use INPUT field. NOT redacted on disk (Decision #3); LLM-prompt boundary IS redacted (A4.5 SEC-3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "text", "elided"],
+      "properties": {
+        "kind": {
+          "description": "\"before\"/\"after\" for Edit/Write; \"before#N\"/\"after#N\" for MultiEdit hunks 1..5 (hunks beyond #5 silently dropped).",
+          "type": "string",
+          "pattern": "^(before|after)(#[1-5])?$"
+        },
+        "text": {
+          "description": "≤1200 chars; longer content gets elision marker (head=1000, tail=150) — exact: \"\\n... [elided N chars] ...\\n\".",
+          "type": "string",
+          "maxLength": 1300
+        },
+        "elided": {
+          "description": "True if original was clipped.",
+          "type": "boolean"
+        }
+      }
+    },
+    "semantic_change": {
+      "description": "One entry per Edit/Write/MultiEdit tool use. Single-file scope.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "files", "operation", "excerpts"],
+      "properties": {
+        "id": { "$ref": "#/$defs/semantic_change_id" },
+        "description": {
+          "description": "Tool-specific format: Write→\"Wrote {fp} ({char_count} chars)\"; Edit→\"Edited {fp}\"; MultiEdit→\"MultiEdit on {fp} ({hunk_count} hunk(s))\".",
+          "type": "string",
+          "minLength": 1
+        },
+        "files": {
+          "description": "ALWAYS single-element array (one file per DIFF). Locked v0.1.1.",
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "operation": {
+          "description": "Locked enum v0.1.1.",
+          "type": "string",
+          "enum": ["write", "edit", "multiedit"]
+        },
+        "excerpts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/excerpt" }
+        }
+      }
+    },
+    "command": {
+      "description": "One entry per Bash tool use. command + stdout_summary REDACTED before write.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "command",
+        "exit_code",
+        "duration_ms",
+        "stdout_summary",
+        "stderr_summary"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/command_id" },
+        "command": {
+          "description": "≤500 chars before redaction; REDACTED before write.",
+          "type": "string"
+        },
+        "exit_code": {
+          "description": "Phase 1: always 0 (parsing deferred to v0.2).",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "Phase 1: always 0 (parsing deferred to v0.2).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "stdout_summary": {
+          "description": "≤1200 chars before redaction; REDACTED before write.",
+          "type": "string"
+        },
+        "stderr_summary": {
+          "description": "ALWAYS EMPTY in Phase 1 (Claude Code mixes stderr into result text; split deferred to v0.2).",
+          "type": "string",
+          "const": ""
+        }
+      }
+    },
+    "test_entry": {
+      "description": "Test detection entry. ref is 140-char-truncated bash command, then redacted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "ref"],
+      "properties": {
+        "id": { "$ref": "#/$defs/test_id" },
+        "ref": {
+          "description": "≤140 chars (truncated bash command), then redacted (A4.5 SEC-1).",
+          "type": "string",
+          "maxLength": 140
+        },
+        "cmd_ref": {
+          "description": "NEW v0.1.1. Back-pointer to commands_run entry. Cross-reference pass verifies it resolves.",
+          "$ref": "#/$defs/command_id"
+        }
+      }
+    },
+    "claim_risk_classification": {
+      "description": "AB-1 / AB-1a (NEW v0.1.1; additive, all sub-fields nullable). Per-claim risk metadata. Phase 1 emits structure with all fields null so Phase 2 (UI) can populate creator_override / reviewer_override without a schema migration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Agent's classification. DEFERRED to v0.2 — Phase 1 emits null block.",
+          "$ref": "#/$defs/risk_classification_block"
+        },
+        "creator_override": {
+          "description": "AB-1: claim-level override by the PR creator.",
+          "$ref": "#/$defs/risk_override_block"
+        },
+        "reviewer_override": {
+          "description": "AB-1a: claim-level override by reviewer.",
+          "$ref": "#/$defs/risk_override_block"
+        }
+      }
+    },
+    "risk_classification_block": {
+      "description": "Agent's classification sub-block. Phase 1: both fields null.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/risk_level" }
+          ]
+        },
+        "rationale": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string" }
+          ]
+        }
+      }
+    },
+    "risk_override_block": {
+      "description": "Override sub-block (creator or reviewer). When level is non-null, reason/at/by MUST also be non-null (validated at the consumer; not expressible cleanly in pure JSON Schema without dependentRequired across nullable fields).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "description": "Null = not overridden. Otherwise risk_level enum.",
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/risk_level" }
+          ]
+        },
+        "reason": {
+          "description": "Required (non-null) when level is non-null.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1 }
+          ]
+        },
+        "at": {
+          "description": "ISO 8601. Required (non-null) when level is non-null.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "format": "date-time" }
+          ]
+        },
+        "by": {
+          "description": "User identity (email/handle). Required (non-null) when level is non-null.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1 }
+          ]
+        }
+      }
+    },
+    "approval_trail_entry": {
+      "description": "AB-4 (NEW v0.1.1). One row per (claim_id, decision event). claim_id values appended by Phase 2 reference the stable claim identifier — when stable_id is populated, Phase 2 SHOULD write stable_id; otherwise the human-facing CLAIM-NNN id (transitional). libSQL's approval_trail.claim_id column joins to claims.claim_id (which is stable_id post-AB-5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_id", "decision", "by", "at"],
+      "properties": {
+        "claim_id": {
+          "description": "Either the human-facing CLAIM-NNN id OR the claim's 16-hex stable_id (AB-5). Cross-reference pass verifies it resolves to a claim in this packet.",
+          "oneOf": [
+            { "$ref": "#/$defs/claim_id" },
+            { "type": "string", "pattern": "^[a-f0-9]{16}$" }
+          ]
+        },
+        "decision": {
+          "description": "Decision event for this claim.",
+          "type": "string",
+          "enum": ["accept", "changes", "block", "reject"]
+        },
+        "reason": {
+          "description": "Optional rationale (≤500 chars after redact). Nullable string.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "maxLength": 500 }
+          ]
+        },
+        "by": {
+          "description": "Decider identity (email/handle).",
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "description": "ISO 8601 with +00:00 suffix. Entries MUST be in chronological order (validated at the consumer; not expressible cleanly in pure JSON Schema).",
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "posted_to_pr_entry": {
+      "description": "AB-2 (NEW v0.1.1). One row per successful post to a PR. body_hash is sha256 (full hex, deterministic) of the markdown that was posted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr_url", "pr_number", "body_hash", "posted_at", "posted_by"],
+      "properties": {
+        "pr_url": {
+          "description": "Full URL to the pull request.",
+          "type": "string",
+          "format": "uri"
+        },
+        "pr_number": {
+          "description": "PR number on the provider.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "body_hash": {
+          "description": "sha256 of the markdown that was posted (full hex; deterministic). 64 lowercase hex chars.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "posted_at": {
+          "description": "ISO 8601 with +00:00 suffix.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "posted_by": {
+          "description": "User identity that triggered the post (email/handle).",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "redaction_audit_entry": {
+      "description": "AB-8 (NEW v0.1.1). Per-pattern × per-layer row. NEVER includes raw match content (use 8-char-hex snippets if precision needed — same locking as redaction_validation_error).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern_id", "layer", "count"],
+      "properties": {
+        "pattern_id": {
+          "description": "Pattern_name from bin/trail-redaction-patterns.yml.",
+          "type": "string",
+          "minLength": 1
+        },
+        "layer": {
+          "description": "1 = Layer 1 capture-time; 2 = Layer 2 write-time; 3 = Layer 3 pre-commit (populated only when Phase 3a ships).",
+          "type": "integer",
+          "enum": [1, 2, 3]
+        },
+        "count": {
+          "description": "Match count for this (pattern_id, layer) tuple.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "locations_summary": {
+          "description": "Human-readable summary of where matches were found; NEVER includes raw match content.",
+          "type": "string"
+        }
+      }
+    },
+    "claim": {
+      "description": "A single claim with evidence refs. THE LOAD-BEARING SHAPE: every claim MUST have non-empty evidence_refs (Phase 1 §7 cross-reference pass).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text",
+        "evidence_refs",
+        "confidence"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/claim_id" },
+        "stable_id": {
+          "description": "AB-5 (NEW v0.1.1). 16-hex-char deterministic key. sha256(session_id || '|' || claim_text || '|' || position) truncated to 16 hex chars. Stable across re-captures of the same session; consumers (libSQL claims.claim_id, Phase 2 carry-forward) MUST key by stable_id, NOT by id.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{16}$"
+        },
+        "text": {
+          "description": "Human-readable claim text.",
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "description": "Non-empty array of evidence references (DIFF-NNN, CMD-NNN, TEST-NNN, PROMPT-NNN). Cross-reference pass (§7 pass 2) verifies each resolves.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_ref" },
+          "minItems": 1
+        },
+        "confidence": {
+          "description": "Phase 1: constant \"supported\" (gradient deferred to v0.2).",
+          "type": "string",
+          "enum": ["supported", "partial", "ungrounded"]
+        },
+        "synthesis_mode": {
+          "description": "NEW v0.1.1. Per-claim synthesis source. Mixed-mode runs are normal: LLM mode appends a mechanical \"Ran N test/validation command(s)\" rollup.",
+          "type": "string",
+          "enum": ["mechanical", "llm"]
+        },
+        "risk_classification": {
+          "$ref": "#/$defs/claim_risk_classification"
+        }
+      }
+    }
+  }
+}

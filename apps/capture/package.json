@@ -1,0 +1,85 @@
+{
+  "name": "@synapti/trail-capture",
+  "version": "0.1.0-rc.1",
+  "description": "Trail Layer 1: post-hoc capture from Claude Code transcripts. TypeScript port of py-reference/cli/trail.py.",
+  "license": "Apache-2.0",
+  "author": "Synapti AI",
+  "homepage": "https://github.com/synaptiai/trail#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synaptiai/trail.git",
+    "directory": "apps/capture"
+  },
+  "bugs": {
+    "url": "https://github.com/synaptiai/trail/issues"
+  },
+  "keywords": [
+    "ai",
+    "claude-code",
+    "change-control",
+    "pr",
+    "code-review",
+    "redaction",
+    "audit",
+    "cli",
+    "trail"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "trail": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "sync-bundled-yaml": "node ./scripts/copy-bin.mjs",
+    "prebuild": "node ./scripts/copy-bin.mjs",
+    "build": "tsc && node ./scripts/copy-bin.mjs",
+    "pretest": "node ./scripts/copy-bin.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src test",
+    "lint:fix": "biome check --write src test",
+    "start": "node ./dist/cli.js",
+    "prepublishOnly": "node ./scripts/copy-bin.mjs && tsc && node ./scripts/copy-bin.mjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "commander": "^12.1.0",
+    "js-yaml": "^4.1.0",
+    "safe-regex": "^2.1.1",
+    "simple-git": "^3.27.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.5.0",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/js-yaml": "^4.0.9",
+    "@types/safe-regex": "^1.1.6",
+    "fast-check": "^3.23.1",
+    "vitest": "^2.1.0"
+  }
+}

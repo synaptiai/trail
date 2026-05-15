@@ -1,0 +1,41 @@
+.horizon {
+  display: block;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.horizon--app-chrome {
+  width: 100%;
+  height: var(--border-width-hairline);
+}
+
+.horizon--packet-header {
+  width: 100%;
+  height: var(--border-width-hairline);
+  margin: var(--space-4) 0;
+}
+
+.horizon--sidebar-divider {
+  width: 100%;
+  height: var(--border-width-hairline);
+  margin: var(--space-4) 0;
+}
+
+.horizon--override-stack-vertical {
+  width: var(--border-width-hairline);
+  height: 100%;
+  min-height: var(--space-6);
+}
+
+.horizon--first-run-hero {
+  width: 100%;
+  height: var(--border-width-hairline);
+  max-width: var(--size-horizon-hero-max);
+}
+
+.horizon--timeline-rail-vertical {
+  width: var(--border-width-hairline);
+  background: var(--trail-line);
+  height: 100%;
+  min-height: 100%;
+}

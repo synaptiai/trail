@@ -1,0 +1,101 @@
+{
+  "$schema": "https://schema.tauri.app/config/v2/capability",
+  "identifier": "default",
+  "description": "Trail Phase 2 capability set — scoped to .trail/ + ~/.trail/ + gh CLI per B5 §6.2.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPDATA/.trail/**" },
+        { "path": "$HOME/.trail/**" },
+        { "path": "$RESOURCE/.trail/**" }
+      ]
+    },
+    "fs:allow-read-file",
+    "fs:allow-read-dir",
+    "fs:allow-write-file",
+    "fs:allow-rename",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "url": "https://github.com/synaptiai/trail" },
+        { "url": "https://github.com/synaptiai/trail#readme" },
+        { "url": "https://cli.github.com/" },
+        { "url": "https://cli.github.com" }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "gh-auth-status",
+          "cmd": "gh",
+          "args": ["auth", "status"]
+        },
+        {
+          "name": "gh-repo-view-json",
+          "cmd": "gh",
+          "args": ["repo", "view", "--json", "nameWithOwner"]
+        },
+        {
+          "name": "gh-pr-view-json",
+          "cmd": "gh",
+          "args": [
+            "pr",
+            "view",
+            { "validator": "^[1-9][0-9]{0,9}$" },
+            "--json",
+            { "validator": "^[a-zA-Z0-9_][a-zA-Z0-9_,]{0,255}$" }
+          ]
+        },
+        {
+          "name": "gh-pr-list-json",
+          "cmd": "gh",
+          "args": [
+            "pr",
+            "list",
+            "--json",
+            { "validator": "^[a-zA-Z0-9_][a-zA-Z0-9_,]{0,255}$" },
+            "--limit",
+            { "validator": "^[1-9][0-9]{0,2}$" }
+          ]
+        },
+        {
+          "name": "gh-pr-edit-body-file",
+          "cmd": "gh",
+          "args": [
+            "pr",
+            "edit",
+            { "validator": "^[1-9][0-9]{0,9}$" },
+            "--body-file",
+            { "validator": "^[A-Za-z0-9_-][A-Za-z0-9._-]{0,123}\\.[A-Za-z0-9]{1,4}$" }
+          ]
+        },
+        {
+          "name": "gh-pr-comment-body-file",
+          "cmd": "gh",
+          "args": [
+            "pr",
+            "comment",
+            { "validator": "^[1-9][0-9]{0,9}$" },
+            "--body-file",
+            { "validator": "^[A-Za-z0-9_-][A-Za-z0-9._-]{0,123}\\.[A-Za-z0-9]{1,4}$" }
+          ]
+        },
+        {
+          "name": "gh-api-pulls-get",
+          "cmd": "gh",
+          "args": [
+            "api",
+            { "validator": "^repos/[A-Za-z0-9_-][A-Za-z0-9._-]{0,38}/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}/pulls/[1-9][0-9]{0,9}$" }
+          ]
+        }
+      ]
+    }
+  ]
+}

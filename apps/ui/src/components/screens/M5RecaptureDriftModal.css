@@ -1,0 +1,99 @@
+/**
+ * M5 re-capture drift modal styling. Uses tokens only.
+ */
+.m5__loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.m5__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.m5__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  /* Capped height so the rows-list scrolls inside the md modal; --space-9
+     is 136px so 3× yields ~408px; --space-9 alone is too short for ~10
+     drift rows. Use --size-modal-* lookup: --size-modal-md is 640px so
+     half its height (320px) is the design intent. */
+  max-height: calc(var(--size-modal-md) / 2);
+  overflow-y: auto;
+}
+
+.m5__row {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+}
+
+.m5__row--added {
+  border-left: var(--border-width-thick) solid var(--risk-low);
+}
+
+.m5__row--modified {
+  border-left: var(--border-width-thick) solid var(--risk-med);
+}
+
+.m5__row--removed {
+  border-left: var(--border-width-thick) solid var(--risk-high);
+}
+
+.m5__row--unchanged {
+  opacity: 0.7;
+}
+
+.m5__kind {
+  flex-shrink: 0;
+  /* Fixed min-width so all four labels (NEW/MOD/GONE/SAME) align in a
+     column. --space-7 is 52px; the labels render at ~40px so 52px gives
+     a small breathing room without violating the token system. */
+  min-width: var(--space-7);
+  text-align: center;
+  align-self: center;
+  color: var(--text-secondary);
+}
+
+.m5__kind--added {
+  color: var(--risk-low);
+}
+
+.m5__kind--modified {
+  color: var(--risk-med);
+}
+
+.m5__kind--removed {
+  color: var(--risk-high);
+}
+
+.m5__row-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.m5__claim-id {
+  color: var(--text-secondary);
+}
+
+.m5__claim-text {
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.m5__diff {
+  margin: 0;
+  color: var(--text-secondary);
+}
