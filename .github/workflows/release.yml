@@ -489,19 +489,49 @@ jobs:
         with:
           projectPath: apps/ui
           args: ${{ matrix.platform.args }}
-          # On push: tauri-action finds the existing draft release by tag
-          # name and uploads installers to it. `tagName` is more reliable
-          # than `releaseId` from create-draft-release output propagation —
-          # observed in rc.2 (run 25921327881): tauri-action received
-          # empty releaseId despite create-draft-release setting the output
-          # correctly, and the build emitted "No releaseId or tagName
-          # provided, skipping all uploads". Switching to tagName uses
-          # GitHub's own ref to find the release; tauri-action's
-          # find-or-create behavior reuses the existing draft.
-          # On dispatch: empty tagName means tauri-action skips upload;
-          # artifacts are picked up by the upload-artifact step below.
-          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          # No release-target params (releaseId/tagName/releaseName):
+          # tauri-action's release discovery uses GitHub's `getReleaseByTag`
+          # API which DOES NOT return draft releases. Both rc.2 (releaseId
+          # path) and rc.3 (tagName path) failed installer upload because
+          # of this. The "Upload Tauri installers to draft release" step
+          # below uses `gh release upload` instead, which works correctly
+          # for drafts. tauri-action without these params skips upload
+          # cleanly (emits "No releaseId or tagName provided" — by design).
           includeUpdaterJson: false
+
+      - name: Upload Tauri installers to draft release
+        # Find installers produced by tauri-action and upload to the
+        # existing draft release via gh CLI. Runs only when there's a
+        # draft to upload to: tag-push event AND (not Windows OR MSI ok).
+        # --clobber tolerates re-runs (overwrites previous asset).
+        if: |
+          github.event_name == 'push'
+          && (matrix.platform.os != 'windows-latest' || env.MSI_COMPATIBLE == 'true')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag='${{ github.ref_name }}'
+          bundle_root='apps/ui/src-tauri/target'
+          artifacts=()
+          while IFS= read -r f; do
+            artifacts+=("$f")
+          done < <(find "$bundle_root" -type f \( \
+              -name '*.dmg' \
+              -o -name 'Trail_*.deb' \
+              -o -name 'Trail_*.AppImage' \
+              -o -name 'Trail_*.msi' \
+            \) ! -name '*.sig' 2>/dev/null | sort -u)
+          if [ ${#artifacts[@]} -eq 0 ]; then
+            echo "::error::No installer artifacts found under $bundle_root"
+            echo "::error::Tree under $bundle_root:"
+            find "$bundle_root" -type f -name 'Trail*' 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          echo "Uploading ${#artifacts[@]} artifact(s) to draft release $tag:"
+          printf '  - %s\n' "${artifacts[@]}"
+          gh release upload "$tag" "${artifacts[@]}" --repo "${{ github.repository }}" --clobber
 
       - name: Upload installer artefacts (workflow_dispatch path)
         if: github.event_name == 'workflow_dispatch'
@@ -529,7 +559,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
+      # `write` required: drafts are only visible to identities with push
+      # access. `gh release view` against a draft from a contents:read
+      # token returns "release not found" (observed in rc.2 + rc.3 runs).
+      contents: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
         with:

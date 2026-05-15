@@ -1,7 +1,7 @@
 {
   "name": "trail",
   "private": true,
-  "version": "0.1.0-rc.3",
+  "version": "0.1.0-rc.4",
   "description": "Trail — AI-native change-control. Schema + post-hoc capture + interactive review for AI-assisted PRs. Apache-2.0 schema; open-core product.",
   "license": "Apache-2.0",
   "type": "module",

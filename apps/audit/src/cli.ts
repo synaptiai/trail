@@ -22,7 +22,7 @@ import { audit } from "./audit.js";
 import { EXIT_GIT_STATE, EXIT_OK, EXIT_PATTERNS, EXIT_VIOLATION } from "./exit-codes.js";
 import { reportViolations } from "./violations.js";
 
-export const VERSION = "0.1.0-rc.3";
+export const VERSION = "0.1.0-rc.4";
 
 export interface RunCliDeps {
   /** Sink for stderr writes. Test seam. */

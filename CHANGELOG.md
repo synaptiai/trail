@@ -4,6 +4,20 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc.4] — 2026-05-15
+
+Fourth release candidate. rc.3 fixed the tauri-action upload target
+(releaseId → tagName) but uploaded still failed: tauri-action's
+`getReleaseByTag` API does not return draft releases, so the tag
+lookup 404'd. rc.4 replaces tauri-action's upload entirely with a
+dedicated `gh release upload` step (gh CLI does find drafts by tag).
+Also bumps release-finalise's permissions from `contents: read` to
+`contents: write` so its `gh release view` call can see drafts (drafts
+require push access to view).
+
+Same substance as rc.3 otherwise. After rc.4 ships, v0.1.0 final cuts
+cleanly with installers + npm published in one workflow run.
+
 ## [0.1.0-rc.3] — 2026-05-15
 
 Third release candidate. rc.2 successfully published both npm packages
