@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Trail CLI entry. Spec §3 commands + flags.
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { spawnClaudeRunner } from "./claims/llm.js";
 import { type Decision, packetDecide } from "./decide/index.js";
@@ -274,7 +275,23 @@ export function findLatestSessionId(cwd: string): string | null {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Bin invocation goes through npm's symlink (e.g. `/opt/homebrew/bin/trail`
+// -> `…/lib/node_modules/@synapti/trail-capture/dist/cli.js`). Node resolves
+// `import.meta.url` to the symlink target, while `process.argv[1]` stays the
+// unresolved symlink path. Resolve both sides through `realpathSync` so the
+// comparison works under npm-bin, pnpm, Yarn, and direct `node dist/cli.js`
+// invocations. rc.4 shipped a guard that compared the resolved URL against
+// the unresolved argv[1] and silently no-op'd every `trail …` command.
+function isMainEntrypoint(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainEntrypoint()) {
   runCli(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {

@@ -1,6 +1,6 @@
 {
   "name": "@trail/ui",
-  "version": "0.1.0-rc.4",
+  "version": "0.1.0-rc.5",
   "description": "Trail Layer 3: Tauri 2.x + React + Vite desktop application. Three personas (Creator/Reviewer/Auditor) of the Trail v0.1 OSS MLP.",
   "license": "Apache-2.0",
   "author": "Synapti AI",

@@ -4,6 +4,42 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc.5] — 2026-05-15
+
+Fifth release candidate. rc.4 attached Tauri installers correctly and
+both npm packages published with provenance — but during dogfood the
+**`trail` and `trail-audit` bins published to npm were silently broken**:
+every invocation exited 0 with no output. Root cause: the bottom-of-cli
+entrypoint guard compared `import.meta.url` (which Node resolves through
+symlinks) against `` `file://${process.argv[1]}` `` (which Node leaves at
+the unresolved symlink path under default flags). The two never matched
+when the bin was invoked through npm's symlink, so `runCli` was never
+called.
+
+The bug slipped past 658 vitest + 168 cargo tests because every existing
+CLI test imports `runCli` from `../src/cli.js` directly, bypassing the
+entrypoint guard entirely. AC#9 (real npm-install dogfood) was the first
+exercise of the actual published-bin path.
+
+### Fixed
+
+- `apps/{capture,audit}/src/cli.ts`: resolve both sides of the
+  entrypoint check through `fs.realpathSync` + `url.fileURLToPath`.
+  Survives npm/pnpm/Yarn bin symlinks and direct `node dist/cli.js`.
+
+### Added — tests
+
+- `apps/capture/test/bin-entrypoint.test.ts` (regression)
+- `apps/audit/test/bin-entrypoint.test.ts` (regression)
+- Both tests spawn the built `dist/cli.js` through a synthetic
+  symlink (the exact shape `npm install -g` produces) and assert
+  `--version` produces real stdout output. The unit-test loophole
+  that let rc.1–rc.4 ship a broken bin is now closed: skipping the
+  guard requires removing the test, not just bypassing the import.
+
+Same substance as rc.4 otherwise. npm packages from rc.1-rc.4 will
+be deprecated post-rc.5 once dist-tag cleanup is run interactively.
+
 ## [0.1.0-rc.4] — 2026-05-15
 
 Fourth release candidate. rc.3 fixed the tauri-action upload target

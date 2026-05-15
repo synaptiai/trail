@@ -16,13 +16,15 @@
 // hint — these are infrastructural, not policy violations, and should not
 // share the violation exit code.
 
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { audit } from "./audit.js";
 import { EXIT_GIT_STATE, EXIT_OK, EXIT_PATTERNS, EXIT_VIOLATION } from "./exit-codes.js";
 import { reportViolations } from "./violations.js";
 
-export const VERSION = "0.1.0-rc.4";
+export const VERSION = "0.1.0-rc.5";
 
 export interface RunCliDeps {
   /** Sink for stderr writes. Test seam. */
@@ -130,8 +132,19 @@ export async function runCli(
   return pendingResult ?? EXIT_OK;
 }
 
-// Direct invocation entrypoint for `node dist/cli.js`.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Bin invocation goes through npm's symlink (see capture/src/cli.ts for the
+// detailed rationale). Resolve both sides through `realpathSync` so the
+// comparison survives npm-bin/pnpm/Yarn symlinks.
+function isMainEntrypoint(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainEntrypoint()) {
   runCli(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {
