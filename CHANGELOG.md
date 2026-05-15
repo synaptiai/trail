@@ -4,9 +4,26 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-rc.1] — 2026-05-15
+## [0.1.0-rc.2] — 2026-05-15
 
-First release candidate of the OSS MLP. Published to npm under the `next`
+Second release candidate. Re-publish of rc.1 after a partial-publish: the
+release.yml propagation poll timed out at 5 minutes during rc.1 because
+npm CDN took longer than expected to surface `@synapti/trail-capture@0.1.0-rc.1`.
+Capture published successfully; audit publish was skipped (gated on the
+poll). Recovery: deprecate rc.1 of capture, cut rc.2 with both packages
+publishing in lockstep. Workflow change: propagation poll extended from
+5 min to 15 min (30 attempts × 30s) to absorb npm CDN tail latencies.
+
+Same substance as rc.1 otherwise. See rc.1 entry below for the full
+release-candidate framing.
+
+## [0.1.0-rc.1] — 2026-05-15 (deprecated; use rc.2)
+
+First release candidate of the OSS MLP. **Partial-published**:
+`@synapti/trail-capture@0.1.0-rc.1` is on npm; `@synapti/trail-audit@0.1.0-rc.1`
+is not. Deprecated via `npm deprecate` post-rc.2. Use 0.1.0-rc.2 instead.
+
+Published to npm under the `next`
 dist-tag (not `latest`) so `npm i @synapti/trail-capture` continues to no-op until
 the acceptance test on a real dogfood repo (gh#5 AC#9) passes and the tag
 is promoted via `npm dist-tag add @synapti/trail-capture@0.1.0 latest`. Tauri

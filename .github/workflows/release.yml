@@ -288,21 +288,26 @@ jobs:
         run: |
           set -euo pipefail
           stderr_log=$(mktemp)
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          # Cycle-5 (post-rc.1): observed 5min insufficient on rc.1 publish —
+          # registry returned 404 for 5+ minutes after publish succeeded.
+          # Extend to 30 attempts × 30s = 15 minutes ceiling. npm CDN
+          # typically propagates in 30-120s but tail latencies can run
+          # 5-10min; 15min keeps a hard upper bound while tolerating tail.
+          for attempt in $(seq 1 30); do
             : >"$stderr_log"
             if npm view "@synapti/trail-capture@${VERSION}" version >/dev/null 2>"$stderr_log"; then
               echo "capture@${VERSION} visible on registry (attempt $attempt)"
               rm -f "$stderr_log"
               exit 0
             fi
-            echo "capture@${VERSION} not yet visible on registry; waiting 30s (attempt $attempt/10)"
+            echo "capture@${VERSION} not yet visible on registry; waiting 30s (attempt $attempt/30)"
             if [ -s "$stderr_log" ]; then
               echo "  last npm view stderr (first 5 lines):"
               head -n 5 "$stderr_log" | sed 's/^/    /'
             fi
             sleep 30
           done
-          echo "::error::capture@${VERSION} did not propagate to registry within 5 minutes."
+          echo "::error::capture@${VERSION} did not propagate to registry within 15 minutes."
           if [ -s "$stderr_log" ]; then
             echo "::error::Final npm view stderr was:"
             head -n 10 "$stderr_log" | sed 's/^/::error::  /'
