@@ -489,11 +489,18 @@ jobs:
         with:
           projectPath: apps/ui
           args: ${{ matrix.platform.args }}
-          # On push: upload to the single draft created by create-draft-release.
-          # On dispatch: empty releaseId means tauri-action does nothing
-          # release-y, so artifacts are picked up by the upload-artifact step
-          # below.
-          releaseId: ${{ github.event_name == 'push' && needs.create-draft-release.outputs.release_id || '' }}
+          # On push: tauri-action finds the existing draft release by tag
+          # name and uploads installers to it. `tagName` is more reliable
+          # than `releaseId` from create-draft-release output propagation —
+          # observed in rc.2 (run 25921327881): tauri-action received
+          # empty releaseId despite create-draft-release setting the output
+          # correctly, and the build emitted "No releaseId or tagName
+          # provided, skipping all uploads". Switching to tagName uses
+          # GitHub's own ref to find the release; tauri-action's
+          # find-or-create behavior reuses the existing draft.
+          # On dispatch: empty tagName means tauri-action skips upload;
+          # artifacts are picked up by the upload-artifact step below.
+          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
           includeUpdaterJson: false
 
       - name: Upload installer artefacts (workflow_dispatch path)

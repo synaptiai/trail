@@ -4,6 +4,23 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc.3] — 2026-05-15
+
+Third release candidate. rc.2 successfully published both npm packages
+with provenance, but the Tauri installer matrix (Linux .deb/.AppImage,
+macOS .dmg) built successfully and then failed to attach to the draft
+GitHub Release. Root cause: release.yml's tauri-action step used the
+`releaseId` parameter populated from `needs.create-draft-release.outputs.release_id`,
+and that output expression resolved to empty in the tauri-build job
+context — tauri-action emitted "No releaseId or tagName provided,
+skipping all uploads". Switched to `tagName: ${{ github.ref_name }}`;
+tauri-action's find-or-create logic locates the existing draft by tag
+name reliably without depending on output propagation.
+
+Same substance as rc.2 otherwise (CLI behavior, schema, redaction
+patterns all unchanged). npm packages from rc.2 remain valid; rc.3
+adds desktop installer attachment to the GitHub Release.
+
 ## [0.1.0-rc.2] — 2026-05-15
 
 Second release candidate. Re-publish of rc.1 after a partial-publish: the
