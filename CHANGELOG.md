@@ -226,12 +226,22 @@ installers ship the same `0.1.0-rc.1` binary via GitHub Release. Substance
 of the release is identical to 0.1.0 below — the `-rc.1` suffix exists to
 keep the publish pipeline reversible while the dogfood loop runs.
 
-## [0.1.0] — 2026-05-XX (in progress)
+## [0.1.0] — 2026-05-15
 
 The OSS MLP. v0.1.0 ships the four MLP must-haves named by external
 respondents (per `opp-001`, `ht-002` panel n=11) as gating for actual use,
 plus enough installation polish to be usable by someone other than the
 founder.
+
+Cut after a seven-rc prerelease cycle that surfaced (and fixed) a class
+of bugs the unit-test suite couldn't see — including a silent-no-op bin
+entrypoint, a schema file missing from the published tarball, a PR-body
+size limit, and a manual `npm deprecate` step that was forgotten across
+six release cycles before it was automated. The AC#9 dogfood acceptance
+test, which exercises the full `npm install -g` → `trail packet generate
+→ post → decide` happy path against a real GitHub PR, is **green** on
+the rc.7 binary as of 2026-05-15. v0.1.0 is byte-identical to rc.7 in
+substance.
 
 ### Added — capture (Layer 1)
 
