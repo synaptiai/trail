@@ -38,12 +38,19 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
     .version(VERSION)
     .exitOverride((err) => {
       throw err;
-    });
+    })
+    // Suppress commander's auto-stderr error write. Our catch handler below
+    // is canonical (it normalises message + exit code). Without this,
+    // commander prints the error AND the handler prints it again — observed
+    // in rc.5 dogfood DF-S3 ("required option '--packet <path>' not specified"
+    // appeared twice).
+    .configureOutput({ outputError: (str, _write) => void str });
 
   const packet = program.command("packet").description("Packet operations");
 
   packet
     .command("generate")
+    .description("Generate a packet from a Claude Code session transcript")
     .argument("[session-id]", "Session id; pass --latest to auto-detect")
     .option("--latest", "Use the latest session for the cwd", false)
     .option("--no-llm", "Force mechanical claim synthesis", false)
@@ -231,8 +238,11 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
     }
     if (
       e.code === "commander.missingArgument" ||
+      e.code === "commander.missingMandatoryOptionValue" ||
       e.code === "commander.unknownOption" ||
-      e.code === "commander.invalidArgument"
+      e.code === "commander.invalidArgument" ||
+      e.code === "commander.invalidOptionArgument" ||
+      e.code === "commander.optionMissingArgument"
     ) {
       process.stderr.write(`invalid args: ${e.message ?? "(unknown)"}\n`);
       return 8;

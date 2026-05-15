@@ -4,6 +4,83 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc.6] — 2026-05-15
+
+Sixth release candidate. rc.5 fixed the bin entrypoint so the published
+binary actually executes; a broader pre-0.1.0 dogfood pass against the
+working rc.5 surfaced two more real bugs (plus two polish items) that
+would have shipped to users in v0.1.0 final without this gate.
+
+### Fixed — P1 (ship-blocker)
+
+- **Schema file not bundled in npm package (DF-S1).** rc.1-rc.5 published
+  tarballs that did not include `schema/pr-change-packet.v0.1.1.schema.json`.
+  Combined with a `defaultSchemaPath()` that resolved upward from the
+  source tree (which doesn't exist in the installed layout), every
+  npm-installed `trail packet generate` exited 5 with `SchemaValidatorInternalError`.
+  Bug was masked through rc.1-rc.4 by the silent-no-op entrypoint and
+  only surfaced after rc.5 fixed the bin guard. Fix:
+  - `apps/capture/scripts/copy-bin.mjs` now syncs canonical
+    `schema/*.json,*.yml` → `apps/capture/dist/schema/` at build, so
+    the dist tree (which ships in the tarball) carries the schema.
+  - `defaultSchemaPath()` probes `../schema/` first (dist/packet/
+    → dist/schema/ — works in production and dev `node dist/cli.js`)
+    then falls back to `../../../../schema/` (apps/capture/src/packet/
+    → repo-root/schema/ — works for vitest TS unit tests). Both layouts
+    now resolve to an existing file.
+  - Regression coverage in `apps/capture/test/bin-entrypoint.test.ts`:
+    a packaging test that asserts `dist/schema/` is present and
+    parseable, plus a spawn test that imports the COMPILED
+    `validate-schema.js` and asserts `defaultSchemaPath()` returns
+    a path that exists.
+
+### Fixed — P2 (high-impact UX)
+
+- **PR body too long for non-trivial sessions (DOGFOOD-2).** The
+  full `renderMarkdown` embeds every diff excerpt inline (~5 KB per
+  claim × hundreds of claims = hundreds of KB), blowing past GitHub's
+  ~64 KB PR-body limit. `gh pr edit --body-file` rejects with
+  `GraphQL: Body is too long`. `trail packet post` failed outright;
+  `trail packet decide` posted the comment + updated `approval_trail`
+  locally but failed to refresh the PR body. Fix:
+  - New `renderMarkdownSummary()` in `render/markdown.ts`. Same
+    essentials (packet ID, claim count, redaction summary, task
+    intent, approval trail) but the claims table omits inline
+    diff content and caps at 50 rows by priority (decided claims
+    first, then appearance order). Footer links to the local
+    full-fidelity packet file.
+  - `packetPost` and `packetDecide` body-refresh now call
+    `renderMarkdownSummary`. Full `renderMarkdown` still drives
+    the local `.trail/sessions/<sid>/packet-N.md` for deep review.
+  - Test coverage: 1000-claim packet renders to <50 KB; decided
+    claims appear regardless of cap; approval trail still emits.
+
+### Fixed — P3 (polish)
+
+- **`trail packet generate` missing description (DF-S2).** Added
+  `.description("Generate a packet from a Claude Code session transcript")`
+  so `trail packet --help` shows the subcommand's purpose alongside
+  the others.
+- **Missing-required-option exit code + double-print (DF-S3).** rc.5
+  exited 1 (not 8) on missing `--packet` etc., and the error message
+  appeared twice (commander's automatic stderr write plus the
+  catch handler's). Fix:
+  - Extended the EXIT=8 catch list to include
+    `commander.missingMandatoryOptionValue`, `commander.invalidOptionArgument`,
+    and `commander.optionMissingArgument`.
+  - `configureOutput({ outputError: noop })` suppresses commander's
+    auto-print; the catch handler is canonical. Applied to both
+    `trail` and `trail-audit`.
+
+### Invalidated from the rc.5 dogfood report
+
+- ~~Exit code 0 on gh failure~~ — was a shell pipeline measurement
+  artifact (`$?` after `| tail` reads tail's exit). Both commands
+  return exit 1 correctly.
+- ~~`--per-diff` produces larger output~~ — works exactly as specified
+  (`docs/specs/phase-1-capture.md:85`: "one claim per DIFF instead of
+  per-file"). Larger output is the documented trade-off for granularity.
+
 ## [0.1.0-rc.5] — 2026-05-15
 
 Fifth release candidate. rc.4 attached Tauri installers correctly and

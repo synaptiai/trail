@@ -2,7 +2,7 @@
 // The schema is loaded once per process from the repo-relative path; for tests
 // the loader can be overridden.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import addFormats from "ajv-formats";
@@ -26,14 +26,36 @@ let cached:
   | { validate: (data: unknown) => boolean; getErrors: () => ValidationIssue[] }
   | undefined;
 
+// Schema path candidates relative to `import.meta.url` of THIS file
+// (validate-schema.{js,ts}). Probed in order; first existing path wins.
+//
+// Two layouts must work:
+//   - PRODUCTION (npm install, `node dist/cli.js`): file is at
+//     dist/packet/validate-schema.js → `../schema/...` = dist/schema/...
+//     (scripts/copy-bin.mjs copies canonical schema/ → dist/schema/ at build).
+//   - TESTS (vitest running TS via ts-loader): file is at
+//     apps/capture/src/packet/validate-schema.ts → `../../../../schema/...`
+//     = repo-root schema/... (the canonical authoring location).
+//
+// rc.5 hard-coded only the test path; every npm-installed `generate` hit
+// SchemaValidatorInternalError (DF-S1). Fixed in rc.6 via probe + fallback.
+const SCHEMA_CANDIDATES = [
+  "../schema/pr-change-packet.v0.1.1.schema.json", // production / dist
+  "../../../../schema/pr-change-packet.v0.1.1.schema.json", // tests / src
+];
+
 export function defaultSchemaPath(): string {
-  // The schema lives at repo-root/schema/pr-change-packet.v0.1.1.schema.json
-  // Resolve from this file: apps/capture/src/packet/validate-schema.ts ->
-  // ../../../../schema/pr-change-packet.v0.1.1.schema.json
+  for (const rel of SCHEMA_CANDIDATES) {
+    const p = resolve(fileURLToPath(new URL(rel, import.meta.url)));
+    if (existsSync(p)) {
+      return p;
+    }
+  }
+  // No candidate exists. Return the production path so the downstream
+  // ENOENT message points at the production layout the user can actually
+  // act on (reinstall, file an issue, etc.).
   return resolve(
-    fileURLToPath(
-      new URL("../../../../schema/pr-change-packet.v0.1.1.schema.json", import.meta.url)
-    )
+    fileURLToPath(new URL(SCHEMA_CANDIDATES[0]!, import.meta.url))
   );
 }
 

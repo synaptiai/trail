@@ -32,7 +32,7 @@ import {
 import { signalCleanupHandle } from "../io/signals.js";
 import type { Packet, PostedToPrEntry } from "../packet/types.js";
 import { loadYaml } from "../packet/yaml.js";
-import { renderMarkdown } from "../render/markdown.js";
+import { renderMarkdownSummary } from "../render/markdown.js";
 import { updateFence } from "./fence.js";
 import {
   GhError,
@@ -202,9 +202,14 @@ export async function packetPost(opts: PostOptions): Promise<PostResult> {
     return { exitCode: EXIT_PACKET_NOT_FOUND };
   }
 
+  // Use the summary render for the PR body. The full inline-diff render
+  // (renderMarkdown) blows past GitHub's ~64 KB PR-body limit on any
+  // non-trivial session. The summary fits comfortably and links to the
+  // full packet at .trail/sessions/<sid>/packet-N.md for deep inspection.
+  // rc.6 (DOGFOOD-2 fix).
   let packetMarkdown: string;
   try {
-    packetMarkdown = renderMarkdown(packet, { packetPath: opts.packetPath });
+    packetMarkdown = renderMarkdownSummary(packet, { packetPath: opts.packetPath });
   } catch (err) {
     writeStderr(opts, `error: failed to render packet markdown: ${(err as Error).message}\n`);
     return { exitCode: EXIT_GENERIC };

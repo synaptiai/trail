@@ -14,7 +14,7 @@
 // directly from src/cli.ts, never exercising the entrypoint guard.
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,7 @@ import { VERSION } from "../src/version.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, "..");
 const distCli = join(packageRoot, "dist", "cli.js");
+const distSchema = join(packageRoot, "dist", "schema", "pr-change-packet.v0.1.1.schema.json");
 
 let tmpDir: string | null = null;
 
@@ -31,9 +32,12 @@ describe("bin entrypoint (regression: rc.4 silent no-op)", () => {
   beforeAll(() => {
     // Ensure dist/cli.js exists before we try to spawn it. CI typically runs
     // `pnpm build` before tests; local `pnpm test` does not, so build here if
-    // missing. tsc is the same compiler that produces the published artifact.
-    if (!existsSync(distCli)) {
+    // missing. tsc + copy-bin is the same pipeline that produces the
+    // published artifact. copy-bin.mjs ALSO populates dist/schema/ — required
+    // by the rc.6 packaging regression test below (DF-S1).
+    if (!existsSync(distCli) || !existsSync(distSchema)) {
       execSync("pnpm exec tsc", { cwd: packageRoot, stdio: "inherit" });
+      execSync("node ./scripts/copy-bin.mjs", { cwd: packageRoot, stdio: "inherit" });
     }
     tmpDir = mkdtempSync(join(tmpdir(), "trail-bin-test-"));
   });
@@ -64,5 +68,40 @@ describe("bin entrypoint (regression: rc.4 silent no-op)", () => {
     });
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(VERSION);
+  });
+
+  // rc.6 packaging regression (DF-S1): the JSON Schema must be bundled
+  // into dist/schema/ so the installed package can locate it at runtime.
+  //
+  // rc.1-rc.5 published without the schema (apps/capture/package.json#files
+  // didn't list it, and defaultSchemaPath() resolved upward from src/ to a
+  // path that didn't exist in the installed layout). Every npm-installed
+  // `trail packet generate` exited 5 with SchemaValidatorInternalError.
+  // copy-bin.mjs now syncs canonical schema/ → dist/schema/ at build, and
+  // defaultSchemaPath() probes both layouts.
+  it("bundles the JSON schema at dist/schema/ (DF-S1 packaging)", () => {
+    expect(existsSync(distSchema)).toBe(true);
+    const raw = readFileSync(distSchema, "utf8");
+    const parsed = JSON.parse(raw) as { $id?: string; $schema?: string };
+    expect(typeof parsed.$schema).toBe("string");
+  });
+
+  it("validator resolves schema to a real path from the dist tree", () => {
+    // Exercise the EXACT path computation that runs in production. Importing
+    // validate-schema from the src tree (as every other unit test does)
+    // hits the src-fallback candidate; spawning Node against the compiled
+    // dist file forces import.meta.url to dist/packet/validate-schema.js.
+    const distValidator = join(packageRoot, "dist", "packet", "validate-schema.js");
+    const distValidatorUrl = `file://${distValidator}`;
+    const probe = [
+      `import('${distValidatorUrl}')`,
+      "  .then(m => { process.stdout.write(m.defaultSchemaPath()); })",
+      "  .catch(e => { process.stderr.write(e.message); process.exit(1); });",
+    ].join("\n");
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(distSchema);
   });
 });

@@ -87,7 +87,7 @@ import {
   nowIso,
   readPacketClaimIds,
 } from "../post/posted-to-pr.js";
-import { renderMarkdown } from "../render/markdown.js";
+import { renderMarkdownSummary } from "../render/markdown.js";
 
 export type Decision = "accept" | "changes" | "block" | "reject";
 
@@ -356,7 +356,10 @@ export async function packetDecide(opts: DecideOptions): Promise<DecideResult> {
     return { exitCode: EXIT_GENERIC };
   }
 
-  const packetMarkdown = renderMarkdown(packet, { packetPath: opts.packetPath });
+  // Use the summary render for the PR body (rc.6 / DOGFOOD-2 fix — the
+  // full inline-diff render exceeds GitHub's ~64 KB PR-body limit on any
+  // non-trivial session and blocks body-refresh after decide).
+  const packetMarkdown = renderMarkdownSummary(packet, { packetPath: opts.packetPath });
   const newBody = updateFence(existingBody, packetMarkdown);
 
   const bodyFile = join(tmpDir, "body.md");

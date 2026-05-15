@@ -24,7 +24,7 @@ import { audit } from "./audit.js";
 import { EXIT_GIT_STATE, EXIT_OK, EXIT_PATTERNS, EXIT_VIOLATION } from "./exit-codes.js";
 import { reportViolations } from "./violations.js";
 
-export const VERSION = "0.1.0-rc.5";
+export const VERSION = "0.1.0-rc.6";
 
 export interface RunCliDeps {
   /** Sink for stderr writes. Test seam. */
@@ -51,7 +51,10 @@ export async function runCli(
     .version(VERSION)
     .exitOverride((err) => {
       throw err;
-    });
+    })
+    // Suppress commander's auto-stderr error write — our catch handler
+    // below is canonical. Without this, the error prints twice (rc.5 DF-S3).
+    .configureOutput({ outputError: (str, _write) => void str });
 
   let pendingResult: number | null = null;
 
@@ -114,8 +117,11 @@ export async function runCli(
     }
     if (
       e.code === "commander.missingArgument" ||
+      e.code === "commander.missingMandatoryOptionValue" ||
       e.code === "commander.unknownOption" ||
       e.code === "commander.invalidArgument" ||
+      e.code === "commander.invalidOptionArgument" ||
+      e.code === "commander.optionMissingArgument" ||
       e.code === "commander.unknownCommand"
     ) {
       deps.writeErr(`invalid args: ${e.message ?? "(unknown)"}\n`);

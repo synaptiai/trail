@@ -79,9 +79,41 @@ if (existsSync(canonicalBin)) {
 }
 
 // Stage 2 — package → dist (preserves prior behaviour).
-if (!existsSync(packageBin)) {
-  process.exit(0);
+if (existsSync(packageBin)) {
+  mkdirSync(dirname(distBin), { recursive: true });
+  cpSync(packageBin, distBin, { recursive: true });
+  console.log(`copied ${packageBin} -> ${distBin}`);
 }
-mkdirSync(dirname(distBin), { recursive: true });
-cpSync(packageBin, distBin, { recursive: true });
-console.log(`copied ${packageBin} -> ${distBin}`);
+
+// Stage 3 — canonical schema/ → dist/schema/.
+//
+// The runtime structural validator (`apps/capture/src/packet/validate-schema.ts`
+// → `dist/packet/validate-schema.js`) loads the JSON Schema at startup via
+// `defaultSchemaPath()`, which resolves `../../schema/...` relative to the
+// compiled file. That path lands at `dist/schema/...` both in dev (after
+// build) and in the installed npm package. Shipping the schema colocated
+// with the compiled JS is the only resolution that survives both layouts.
+//
+// rc.5 shipped without this stage. Every npm-installed `trail packet generate`
+// hit `SchemaValidatorInternalError: cannot read JSON Schema at /opt/homebrew/
+// lib/node_modules/schema/...` and exited 5. Caught during the rc.5 broader
+// dogfood as DF-S1 (P1 ship-blocker). Fixed in rc.6.
+const canonicalSchema = resolve(repoRoot, "schema");
+const distSchema = resolve(pkgRoot, "dist", "schema");
+if (existsSync(canonicalSchema)) {
+  mkdirSync(distSchema, { recursive: true });
+  const schemaSynced = [];
+  for (const entry of readdirSync(canonicalSchema, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".json") && !entry.name.endsWith(".yml")) continue;
+    copyFileSync(join(canonicalSchema, entry.name), join(distSchema, entry.name));
+    schemaSynced.push(entry.name);
+  }
+  if (schemaSynced.length > 0) {
+    console.log(
+      `synced canonical schema → dist: ${canonicalSchema} -> ${distSchema} (${schemaSynced.join(", ")})`
+    );
+  }
+} else {
+  console.warn(`canonical schema/ not found at ${canonicalSchema}; skipping stage 3`);
+}

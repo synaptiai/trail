@@ -1,8 +1,8 @@
 // Markdown render unit tests (Appendix C).
 
 import { describe, expect, test } from "vitest";
-import type { Packet } from "../src/packet/types.js";
-import { renderMarkdown } from "../src/render/markdown.js";
+import type { Claim, Packet } from "../src/packet/types.js";
+import { renderMarkdown, renderMarkdownSummary } from "../src/render/markdown.js";
 
 function basePacket(): Packet {
   return {
@@ -223,5 +223,151 @@ describe("renderMarkdown", () => {
     expect(md).toContain("ops\\|reviewer@y.com");
     expect(md).toContain("2026-05-09T03:05:20.148+00:00\\|alt-format");
     expect(md).not.toMatch(/\| ops\|reviewer/);
+  });
+});
+
+// rc.6 / DOGFOOD-2 regression suite. The summary render replaces the full
+// inline-diff render in the PR-body path (`packet post`, `packet decide`
+// body-refresh). It must:
+//   1. Produce a body well under GitHub's ~65 KB PR-body limit even for
+//      thousand-claim packets.
+//   2. NOT inline diff excerpts (the bloat source — ~5 KB/claim in the full
+//      render).
+//   3. Surface essentials: packet ID, claim count, redaction summary,
+//      task intent, approval trail.
+//   4. Prioritize claims with recorded decisions in the capped table.
+describe("renderMarkdownSummary (rc.6 PR-body render)", () => {
+  function manyClaims(n: number): Claim[] {
+    const claims: Claim[] = [];
+    for (let i = 1; i <= n; i++) {
+      claims.push({
+        id: `CLAIM-${i.toString().padStart(3, "0")}`,
+        stable_id: i.toString(16).padStart(16, "0"),
+        text: `synthetic claim ${i} — exercising the summary render bloat profile`,
+        evidence_refs: [`DIFF-${i.toString().padStart(3, "0")}`],
+        confidence: "supported",
+        synthesis_mode: "mechanical",
+      });
+    }
+    return claims;
+  }
+
+  test("excludes inline diff excerpts (bloat source — was the rc.4/5 bug)", () => {
+    const md = renderMarkdownSummary(basePacket(), { packetPath: "/tmp/p.yml" });
+    // The full render emits "+ after" / "− before" markers for each diff
+    // excerpt; the summary must not.
+    expect(md).not.toContain("+ after");
+    expect(md).not.toContain("− before");
+    // Likewise no fenced code blocks holding diff content.
+    expect(md).not.toMatch(/```typescript/);
+  });
+
+  test("surfaces packet ID, claim count, and link to full packet", () => {
+    const md = renderMarkdownSummary(basePacket(), {
+      packetPath: "/repo/.trail/sessions/abcd/packet-1.yml",
+    });
+    expect(md).toContain("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    expect(md).toContain("1 total");
+    expect(md).toContain("0 ungrounded");
+    // Footer links to both yaml + md form of the local packet.
+    expect(md).toContain("/repo/.trail/sessions/abcd/packet-1.yml");
+    expect(md).toContain("/repo/.trail/sessions/abcd/packet-1.md");
+  });
+
+  test("fits under 50 KB even for 1000-claim packets", () => {
+    const p = basePacket();
+    p.summary.claims = manyClaims(1000);
+    p.summary.ungrounded_claim_count = 0;
+    const md = renderMarkdownSummary(p, { packetPath: "/tmp/p.yml" });
+    expect(md.length).toBeLessThan(50_000);
+    // The truncation footer documents that more claims exist.
+    expect(md).toMatch(/…and \d+ more claim\(s\)/);
+  });
+
+  test("prioritizes claims with approval_trail decisions in the capped table", () => {
+    const p = basePacket();
+    p.summary.claims = manyClaims(100);
+    p.summary.ungrounded_claim_count = 0;
+    // Record a decision on the LAST claim (CLAIM-100) — which would
+    // otherwise be cut by the cap.
+    p.approval_trail = [
+      {
+        claim_id: "CLAIM-100",
+        decision: "accept",
+        reason: null,
+        by: "x@y.com",
+        at: "2026-05-09T03:05:20.148+00:00",
+      },
+    ];
+    const md = renderMarkdownSummary(p, { packetPath: "/tmp/p.yml" });
+    // CLAIM-100 must appear in the table despite being claim #100 in
+    // appearance order (cap is 50).
+    expect(md).toContain("`CLAIM-100`");
+  });
+
+  test("renders status column with decision label when claim has approval entry", () => {
+    const p = basePacket();
+    p.approval_trail = [
+      {
+        claim_id: "CLAIM-001",
+        decision: "reject",
+        reason: "out of scope",
+        by: "x@y.com",
+        at: "2026-05-09T03:05:20.148+00:00",
+      },
+    ];
+    const md = renderMarkdownSummary(p, { packetPath: "/tmp/p.yml" });
+    // Table row for CLAIM-001 should contain the decision label.
+    const lines = md.split("\n");
+    const claimRow = lines.find((l) => l.includes("`CLAIM-001`") && l.includes("|"));
+    expect(claimRow).toBeDefined();
+    expect(claimRow).toContain("❌ reject");
+  });
+
+  test("falls back to em-dash status for undecided claims", () => {
+    const md = renderMarkdownSummary(basePacket(), { packetPath: "/tmp/p.yml" });
+    const lines = md.split("\n");
+    const claimRow = lines.find((l) => l.includes("`CLAIM-001`") && l.includes("|"));
+    expect(claimRow).toBeDefined();
+    expect(claimRow).toContain("| — |");
+  });
+
+  test("truncates long claim text but preserves CLAIM id and evidence count", () => {
+    const p = basePacket();
+    p.summary.claims[0]!.text = "x".repeat(500);
+    const md = renderMarkdownSummary(p, { packetPath: "/tmp/p.yml" });
+    expect(md).toContain("`CLAIM-001`");
+    expect(md).toContain("1 ref(s)");
+    // Truncated to ~120 chars, then ellipsis. The full 500-x string must
+    // NOT appear.
+    expect(md).not.toContain("x".repeat(500));
+    expect(md).toContain("…");
+  });
+
+  test("surfaces empty-claims-list case cleanly without a table", () => {
+    const p = basePacket();
+    p.summary.claims = [];
+    const md = renderMarkdownSummary(p, { packetPath: "/tmp/p.yml" });
+    expect(md).toContain("0 total");
+    expect(md).toContain("No claims recorded");
+    expect(md).not.toContain("| Claim | Text |");
+  });
+
+  test("emits approval trail table even when claims table is capped", () => {
+    const p = basePacket();
+    p.summary.claims = manyClaims(500);
+    p.approval_trail = [
+      {
+        claim_id: "CLAIM-499",
+        decision: "block",
+        reason: "needs design review",
+        by: "alice@example.com",
+        at: "2026-05-09T03:05:20.148+00:00",
+      },
+    ];
+    const md = renderMarkdownSummary(p, { packetPath: "/tmp/p.yml" });
+    expect(md).toContain("## Approval Trail");
+    expect(md).toContain("alice@example.com");
+    expect(md).toContain("needs design review");
   });
 });
