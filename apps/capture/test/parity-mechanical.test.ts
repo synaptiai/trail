@@ -86,14 +86,29 @@ describe.runIf(transcriptAvailable && pyReferenceAvailable && pythonAvailable)(
       if (r.status !== 0) {
         throw new Error(`py-reference exited ${r.status}: ${r.stderr}`);
       }
-      // v0.1.1 DF-S6: load with CORE_SCHEMA so YAML 1.1's scientific-
-      // notation coercion (e.g. "49e7141170502230" → Infinity) does NOT
-      // corrupt 16-char hex stable_id fields. The capture pipeline itself
-      // never parses packet YAML via js-yaml's default schema (ajv
-      // validates; the Tauri shell uses a stricter parser), so this is
-      // purely a test-harness fix. Pre-B13a this caused the stable_id
-      // assertion below to be permanently `.skip`ped.
-      pyPacket = jsYaml.load(readFileSync(pyOut, "utf-8"), {
+      // v0.1.2 DF-S6 (full fix): py-reference emits 16-char hex stable_id
+      // values as bare scalars. js-yaml CORE_SCHEMA still permits YAML 1.1
+      // float-exp coercion, so `49e7141170502230` parses as `49 * 10^...`
+      // = Infinity. Pre-load regex massage quotes any stable_id line
+      // before js-yaml's scanner sees it, sidestepping the coercion
+      // without touching py-reference's output format or downgrading to
+      // FAILSAFE_SCHEMA (which would also stringify numeric fields like
+      // exit_code that other assertions compare numerically).
+      //
+      // The regex matches lines of the form `<indent>- stable_id: <value>`
+      // (sequence item) and `<indent>stable_id: <value>` (mapping value)
+      // where the value starts with a digit, contains only digits +
+      // exponent characters, and is unquoted. Already-quoted values are
+      // untouched because their value starts with `"` or `'`. The
+      // capture pipeline itself never parses packet YAML via js-yaml's
+      // default schema (ajv validates against the JSON Schema; the Tauri
+      // shell uses serde_yaml with stricter type discipline), so this is
+      // a test-harness fix only.
+      const rawYaml = readFileSync(pyOut, "utf-8").replace(
+        /^(\s*-?\s*stable_id:\s*)([0-9][0-9a-fA-FeE.+-]*)\s*$/gm,
+        '$1"$2"'
+      );
+      pyPacket = jsYaml.load(rawYaml, {
         schema: jsYaml.CORE_SCHEMA,
       }) as Record<string, unknown>;
 
@@ -202,15 +217,10 @@ describe.runIf(transcriptAvailable && pyReferenceAvailable && pythonAvailable)(
     // The non-stable_id assertions (text, evidence_refs, synthesis_mode)
     // still belong in this file — they're the actual parity contract; the
     // stable_id check just needs a load-time hardening.
-    // v0.1.1 B13a partial: CORE_SCHEMA load above narrows the coercion
-    // surface but YAML 1.1 / JSON-compatible schemas still accept
-    // `49e7141170502230` as a scientific-notation float → Infinity.
-    // The full fix needs either (a) a custom Schema that drops the
-    // float-exp scalar, or (b) stringifying the stable_id field at the
-    // py-reference write site. Both are bigger than the v0.1.1 scope;
-    // tracking as v0.1.2 follow-up. Keeping the schema arg in place
-    // because CORE_SCHEMA is still the correct lower bound.
-    test.skip("each claim text + stable_id matches py-reference position-by-position (DF-S6: see comment)", () => {
+    // v0.1.2 DF-S6 (full fix): pre-load regex quotes stable_id values
+    // before js-yaml sees them — see the rawYaml replace in beforeAll.
+    // The stable_id parity assertion is re-enabled.
+    test("each claim text + stable_id matches py-reference position-by-position", () => {
       const tsClaims = (tsPacket.summary as Record<string, unknown>).claims as Record<
         string,
         unknown

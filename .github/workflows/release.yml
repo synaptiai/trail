@@ -323,23 +323,28 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm --filter @synapti/trail-audit publish --access public --provenance --no-git-checks --tag "${NPM_DIST_TAG}"
 
-      - name: Deprecate superseded prereleases
-        # rc.7 (DF-S5 fix): auto-deprecate older prereleases on the same
-        # major.minor.patch family. Replaces the rc.1-rc.6 hand-cranked
-        # `npm deprecate` loop that required interactive 2FA each cycle.
+      - name: Deprecate superseded prereleases + prior-stable patches
+        # rc.7 (DF-S5): auto-deprecate older prereleases on the same
+        # major.minor.patch family.
+        # v0.1.2 (gap from v0.1.1 ship): EXTENDED to also auto-deprecate
+        # prior stable patches in the same major.minor train when shipping
+        # a new stable patch. v0.1.1 shipped with a desktop IPC ship-blocker
+        # fix; without this extension, @synapti/*@0.1.0 stayed live on
+        # the registry as a still-installable known-broken version.
         #
-        # Logic:
-        #   1. List all published versions of each package.
-        #   2. For each version that is a prerelease (semver with `-`),
-        #      shares major.minor.patch with NEW_VERSION, and is NOT the
-        #      just-published version, run `npm deprecate`.
-        #   3. Idempotent: already-deprecated versions are skipped.
-        #
-        # When NEW_VERSION is stable (no `-`), this loop deprecates ALL
-        # prereleases of that release-train (e.g. 0.1.0 → deprecate
-        # 0.1.0-rc.1..rc.N). When NEW_VERSION is itself a prerelease, it
-        # deprecates only earlier prereleases (e.g. 0.1.0-rc.7 →
-        # deprecate 0.1.0-rc.1..rc.6).
+        # Scope rules:
+        #   - Same major.minor.patch + has `-` (prerelease) → deprecate.
+        #     (e.g. shipping 0.1.0 deprecates 0.1.0-rc.1..rc.7)
+        #   - Same major.minor + no `-` (prior stable patch) AND
+        #     NEW_VERSION is itself a stable patch → deprecate.
+        #     (e.g. shipping 0.1.1 deprecates 0.1.0; shipping 0.1.2
+        #     deprecates 0.1.0 + 0.1.1)
+        #   - Different major.minor train → leave alone (e.g. shipping
+        #     0.1.0 leaves 0.2.0-rc.1 untouched).
+        #   - Prereleases NOT in the just-published family but in the
+        #     same minor (e.g. 0.1.0-rc.7 when shipping 0.1.2) → leave
+        #     alone; their family-prereleases already saw rc-cycle
+        #     deprecation.
         #
         # The Automation NPM_TOKEN bypasses 2FA — same permissions class
         # used for the publish steps above.
@@ -350,11 +355,14 @@ jobs:
           set -euo pipefail
           # Family = major.minor.patch of NEW_VERSION (strip prerelease suffix).
           family="${VERSION%%-*}"
+          # Minor train = major.minor (strip patch + prerelease). Used by
+          # the v0.1.2 prior-stable extension below.
+          minor_train=$(echo "$family" | cut -d. -f1,2)
           new_is_stable=true
           if [[ "$VERSION" == *-* ]]; then
             new_is_stable=false
           fi
-          echo "VERSION=$VERSION family=$family new_is_stable=$new_is_stable"
+          echo "VERSION=$VERSION family=$family minor_train=$minor_train new_is_stable=$new_is_stable"
 
           for pkg in @synapti/trail-capture @synapti/trail-audit; do
             echo
@@ -367,16 +375,24 @@ jobs:
             for v in $(echo "$versions" | jq -r '.[]'); do
               # Skip the version we just published.
               if [[ "$v" == "$VERSION" ]]; then continue; fi
-              # Skip stable versions (no `-` in the version string). We
-              # never deprecate stable releases automatically — that's a
-              # call for a human (e.g. security advisory, EOL).
-              if [[ "$v" != *-* ]]; then continue; fi
-              # Family check: only deprecate prereleases of the SAME
-              # major.minor.patch as NEW_VERSION. Leaves prereleases on
-              # OTHER trains (e.g. 0.2.0-rc.1 when shipping 0.1.0)
-              # untouched.
+              # Decide whether to deprecate this version.
               v_family="${v%%-*}"
-              if [[ "$v_family" != "$family" ]]; then continue; fi
+              v_minor=$(echo "$v_family" | cut -d. -f1,2)
+              is_prerelease=false
+              if [[ "$v" == *-* ]]; then is_prerelease=true; fi
+
+              if $is_prerelease; then
+                # Prerelease branch: same-family only (original rc.7 logic).
+                if [[ "$v_family" != "$family" ]]; then continue; fi
+              else
+                # Stable branch (v0.1.2 extension): deprecate only if
+                # NEW_VERSION is also stable AND v is in the same minor
+                # train. A stable patch supersedes prior stable patches
+                # in the same minor. NEW=prerelease never deprecates
+                # prior stables.
+                if [[ "$new_is_stable" != "true" ]]; then continue; fi
+                if [[ "$v_minor" != "$minor_train" ]]; then continue; fi
+              fi
               # v0.1.1 B13e: always re-deprecate, even if already deprecated.
               # The pre-B13e skip-if-already-deprecated check left earlier
               # prereleases carrying out-of-date messages (e.g. rc.4-rc.6

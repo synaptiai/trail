@@ -1043,7 +1043,17 @@ pub struct WriteSettingsArgs {
 
 #[tauri::command]
 pub async fn write_settings(args: WriteSettingsArgs) -> IpcResult<OkResponse> {
-    reject_auditor(args.persona, "write_settings")?;
+    // v0.1.2 B11: auditor was previously wholesale-rejected on
+    // write_settings (the cycle-4.5 W1 threat: auditor silencing J12
+    // tamper warnings via `disable_tamper_warnings`). But `pinned_sessions`
+    // is purely a UI affordance — auditor reviewing 5 sessions in a row
+    // legitimately wants to mark one for return. Allow auditor IF the
+    // partial contains ONLY `pinned_sessions` and no other settings keys.
+    // Any partial that touches even one other field reverts to the
+    // original wholesale rejection.
+    if args.persona == Persona::Auditor && !partial_is_pinned_sessions_only(&args.partial) {
+        reject_auditor(args.persona, "write_settings")?;
+    }
     let path = settings::resolve_settings_path().map_err(|e| IpcError::Internal {
         message: format!("settings path: {e}"),
     })?;
@@ -1055,6 +1065,20 @@ pub async fn write_settings(args: WriteSettingsArgs) -> IpcResult<OkResponse> {
         message: format!("write_settings: {e}"),
     })?;
     Ok(OkResponse { ok: true })
+}
+
+/// v0.1.2 B11: returns true when `partial` is a JSON object whose only
+/// key is `pinned_sessions`. Used by `write_settings` to allow auditor
+/// to maintain the recent-sessions pin list (UI affordance — no security
+/// threat) while preserving the wholesale auditor-rejection on any
+/// partial that touches a security-sensitive field like
+/// `disable_tamper_warnings`. An empty object returns false — there is
+/// no auditor use case for a no-op write.
+fn partial_is_pinned_sessions_only(partial: &serde_json::Value) -> bool {
+    let Some(obj) = partial.as_object() else {
+        return false;
+    };
+    obj.len() == 1 && obj.contains_key("pinned_sessions")
 }
 
 /// Merge a JSON `partial` into `current`. Only the fields documented in
@@ -1736,6 +1760,63 @@ mod tests {
             // expected fallback behavior at the predicate layer.
             let _ = audit_event_requires_writer(unknown);
         }
+    }
+
+    // v0.1.2 B11: auditor may write `pinned_sessions` partials (UI
+    // affordance, no security threat); any partial that touches another
+    // settings field reverts to the wholesale auditor-rejection.
+    #[test]
+    fn b11_pinned_sessions_only_partial_allows_auditor() {
+        let partial = serde_json::json!({
+            "pinned_sessions": [{"session_id": "abc", "pinned_at": "2026-05-17T12:00:00Z"}]
+        });
+        assert!(partial_is_pinned_sessions_only(&partial));
+    }
+
+    #[test]
+    fn b11_pinned_sessions_with_extra_field_blocks_auditor() {
+        let partial = serde_json::json!({
+            "pinned_sessions": [],
+            "theme": "dark"
+        });
+        assert!(!partial_is_pinned_sessions_only(&partial));
+    }
+
+    #[test]
+    fn b11_other_field_alone_blocks_auditor() {
+        for key in [
+            "theme",
+            "density",
+            "disable_tamper_warnings",
+            "heavy_redaction_threshold",
+            "capture_cli_path",
+            "hmac",
+        ] {
+            let partial = serde_json::json!({ key: "x" });
+            assert!(
+                !partial_is_pinned_sessions_only(&partial),
+                "partial with only `{key}` must NOT be treated as pinned_sessions-only"
+            );
+        }
+    }
+
+    #[test]
+    fn b11_empty_partial_blocks_auditor() {
+        // No use case for an empty write; require an explicit
+        // pinned_sessions key.
+        let partial = serde_json::json!({});
+        assert!(!partial_is_pinned_sessions_only(&partial));
+    }
+
+    #[test]
+    fn b11_non_object_partial_blocks_auditor() {
+        // Defence-in-depth: a malformed partial that isn't an object
+        // must NOT pass through. The handler's merge_settings_partial
+        // would also reject this with InvalidArguments, but the gate
+        // here is the first line.
+        assert!(!partial_is_pinned_sessions_only(&serde_json::json!([])));
+        assert!(!partial_is_pinned_sessions_only(&serde_json::json!("x")));
+        assert!(!partial_is_pinned_sessions_only(&serde_json::json!(null)));
     }
 
     #[test]

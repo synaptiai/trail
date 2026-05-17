@@ -4,6 +4,75 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-05-17
+
+Quality polish on top of v0.1.1. Closes the four small items from the
+post-v0.1.1 audit that were each shippable without external dependencies.
+No production-behavior regressions; new tests added cover each change.
+
+### Fixed — release pipeline
+
+- **Prior-stable auto-deprecation** in `.github/workflows/release.yml`.
+  v0.1.1 shipped but `@synapti/*@0.1.0` stayed live on npm because the
+  family-scoping only deprecated same-`major.minor.patch` prereleases.
+  Extended scope: a stable patch ship now also deprecates prior stable
+  patches in the same `major.minor` train. v0.1.2 publishing will
+  retroactively deprecate 0.1.0 + 0.1.1 with the v0.1.2 "Superseded by
+  0.1.2 (stable). Use @latest." message — closing the gap that left
+  v0.1.0 (with the broken desktop shell) still installable without a
+  warning.
+
+### Fixed — capture quality gate
+
+- **`apps/capture` CI workflow** (closes [#75](https://github.com/synaptiai/trail/issues/75))
+  — new `.github/workflows/capture-quality-gates.yml`, parallel to
+  `ui-quality-gates.yml`. Runs typecheck + lint + vitest + build on
+  every PR that touches `apps/capture/**`, the bundled schema, or the
+  pattern catalogs. Closes the gate that allowed the v0.1.0 DF-S1
+  ship-blocker (schema not bundled in the npm tarball) to ship.
+
+### Fixed — test harness
+
+- **DF-S6 full fix** in `apps/capture/test/parity-mechanical.test.ts`.
+  v0.1.1 added `jsYaml.CORE_SCHEMA` but CORE_SCHEMA still permits YAML
+  1.1 float-exp coercion (`49e7141170502230` → `Infinity`). Full fix is
+  a pre-load regex that quotes any `stable_id` line before js-yaml's
+  scanner sees it — no change to py-reference output format, no
+  downgrade to FAILSAFE_SCHEMA. The stable_id parity assertion is
+  re-enabled (was `.skip`-marked from v0.1.1).
+  Capture test count: 329 passed | 3 skipped → 330 passed | 2 skipped.
+
+### Fixed — auditor UX
+
+- **Auditor `pinned_sessions`-only write allowance**. v0.1.1's cycle-4.5
+  W1 fix wholesale-rejected auditor on `write_settings`; that conflated
+  the security threat (auditor silencing J12 tamper warnings via
+  `disable_tamper_warnings`) with a benign UI affordance (maintaining
+  the recent-sessions pin list). New predicate
+  `partial_is_pinned_sessions_only(partial)` allows auditor IFF the
+  partial contains ONLY `pinned_sessions` and no other key. Any partial
+  that touches even one security-sensitive field reverts to the
+  original wholesale rejection. 5 new tests pin the boundary.
+
+### Test surface delta
+
+- @trail/ui: 508 / 508 (unchanged).
+- @synapti/trail-capture: **330 passed | 2 skipped** (+1 re-enabled
+  parity test via DF-S6 fix).
+- @synapti/trail-audit: 77 / 77 (unchanged).
+- trail-ui (Rust): **366 / 366** (+10 from B11 tests; was 356).
+
+### Deferred (carried to v0.1.3+)
+
+- macOS code-signing + notarisation (requires Apple Developer Program
+  enrolment).
+- `seed_stress_packets` release-binary symbol audit + auditor reject.
+- High-entropy regex SHA exclusion ([#77](https://github.com/synaptiai/trail/issues/77)).
+- Canonical fixture regeneration with v0.1.4+ Layer 1
+  ([#78](https://github.com/synaptiai/trail/issues/78)).
+- Production-runtime webdriver smoke (tauri-driver / WebDriverIO
+  against built bundle).
+
 ## [0.1.1] — 2026-05-16
 
 First patch release after the v0.1.0 OSS MLP. The 0.1.0 desktop shell
