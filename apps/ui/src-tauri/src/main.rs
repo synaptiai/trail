@@ -273,6 +273,12 @@ fn build_recovery_rebuild_closure(
 ) -> Box<dyn FnMut(&saga::IntentLogMarker) -> Result<(), saga::SagaError> + '_> {
     Box::new(move |marker: &saga::IntentLogMarker| {
         let yaml = std::fs::read_to_string(&marker.yaml_path)?;
+        // v0.1.1 B7: gate boot recovery YAML against anchor-bomb / oversize
+        // attacks. A marker pointing at hostile YAML would otherwise hit an
+        // unbounded serde_yaml::from_str during the recovery scan and OOM
+        // the desktop before the UI even starts.
+        yaml_safety::guard(&yaml)
+            .map_err(|e| saga::SagaError::YamlParse(format!("yaml_safety: {e:?}")))?;
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml)
             .map_err(|e| saga::SagaError::YamlParse(e.to_string()))?;
         let entries = parsed
@@ -365,6 +371,12 @@ fn resolve_trail_sessions_dir() -> Option<std::path::PathBuf> {
 
 fn parse_patterns_file(path: &std::path::Path) -> Result<Vec<(String, regex::Regex)>, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    // v0.1.1 B7: the patterns file is located via CWD-ancestor walk
+    // (security audit P3-6 — any directory the user `cd`s to before
+    // launching can host a hostile bin/trail-redaction-patterns.yml).
+    // Gate against anchor-bomb / oversize before the unbounded parse.
+    yaml_safety::guard(&raw)
+        .map_err(|e| format!("patterns file rejected by yaml_safety: {e:?}"))?;
     let v: serde_yaml::Value = serde_yaml::from_str(&raw).map_err(|e| e.to_string())?;
     let arr = v
         .get("patterns")
@@ -420,112 +432,18 @@ fn spawn_fs_watcher<R: tauri::Runtime>(handle: tauri::AppHandle<R>) {
     let result = watcher::spawn_watcher(
         &sessions_dir,
         move |paths| {
-        let h = handle_clone.clone();
-        // Process each path through the classifier. The classifier needs
-        // (path, read_yaml, lookup_known_hash, saga_in_flight). We
-        // resolve all of these here and emit Tauri events accordingly.
-        for path in paths {
-            // Cycle-1.5 F2 fix (gh#11 AC-4 closure for parse-error /
-            // missing branches): reverse-lookup the packet_id from the
-            // path via libSQL BEFORE emitting parse-error / missing
-            // events so the frontend's `packet_id === packetId` filter
-            // surfaces the J12 banner for the open packet. Cycle-1
-            // emitted with `packet_id: ""` which the React filter
-            // silently swallowed.
-            let resolved_packet_id: String = {
-                let db_state = h.state::<db::DbState>();
-                let resolved = match db_state.0.lock() {
-                    Ok(conn) => db::select_packet_id_by_path(&conn, &path)
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default(),
-                    Err(_) => String::new(),
-                };
-                resolved
-            };
-            let yaml_text = match std::fs::read_to_string(&path) {
-                Ok(s) => Some(s),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => {
-                    warn!(target: "trail::watcher", path = %path.display(), error = %e, "watcher read failed");
-                    continue;
-                }
-            };
-            let parsed = match yaml_text.as_deref().map(serde_yaml::from_str::<serde_yaml::Value>) {
-                Some(Ok(v)) => Some(v),
-                Some(Err(e)) => {
-                    let _ = h.emit(
-                        "packet-changed-externally",
-                        serde_json::json!({
-                            "packet_id": resolved_packet_id,
-                            "mismatch_type": "parse-error",
-                            "message": e.to_string(),
-                        }),
-                    );
-                    continue;
-                }
-                None => None,
-            };
-            let Some(parsed) = parsed else {
-                let _ = h.emit(
-                    "packet-changed-externally",
-                    serde_json::json!({
-                        "packet_id": resolved_packet_id,
-                        "mismatch_type": "missing",
-                    }),
-                );
-                continue;
-            };
-            let packet_id = parsed
-                .get("_meta")
-                .and_then(|m| m.get("packet_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if packet_id.is_empty() {
-                continue;
+            let h = handle_clone.clone();
+            // v0.1.1 B6: route each path through `watcher::evaluate_change`
+            // so the classifier is the single source of truth (replaces the
+            // previous inline re-implementation). The closures below resolve
+            // (read_yaml, lookup_known_hash, saga_in_flight) from the Tauri
+            // state; the returned `WatcherDecision` maps 1:1 onto the same
+            // three event names emitted by the prior inline classifier
+            // (`packet-changed-externally`, `trail-needs-refresh`,
+            // `watcher-degraded`).
+            for path in paths {
+                dispatch_watcher_event(&h, &path);
             }
-            // Self-write check: registry membership.
-            let saga_state = h.state::<ipc::SagaState>();
-            if saga_state.registry.contains(&packet_id) {
-                continue; // ignore — the saga itself is mid-write
-            }
-            // Hash compare.
-            let db_state = h.state::<db::DbState>();
-            let stored_hash = match db_state.0.lock() {
-                Ok(conn) => conn
-                    .query_row(
-                        "SELECT last_known_hash FROM packets WHERE packet_id = ?1",
-                        [&packet_id],
-                        |row| row.get::<_, Option<String>>(0),
-                    )
-                    .ok()
-                    .flatten(),
-                Err(_) => None,
-            };
-            let current_hash = saga::compute_approval_trail_hash(&parsed);
-            match stored_hash {
-                Some(stored) if stored == current_hash => {
-                    // No-op: in sync. Still notify the trail browser
-                    // path so a freshly-captured packet (just appended
-                    // via capture CLI) shows up.
-                    let _ = h.emit("trail-needs-refresh", serde_json::json!({}));
-                }
-                Some(_) => {
-                    let _ = h.emit(
-                        "packet-changed-externally",
-                        serde_json::json!({
-                            "packet_id": packet_id,
-                            "mismatch_type": "hash-mismatch",
-                        }),
-                    );
-                }
-                None => {
-                    // No prior hash — first-touch packet. Trail refresh.
-                    let _ = h.emit("trail-needs-refresh", serde_json::json!({}));
-                }
-            }
-        }
         },
         // Cycle-1.5 F12 fix: emit a UI-facing event when the notify
         // backend reports an error (e.g., inotify_add_watch ENOSPC,
@@ -552,6 +470,157 @@ fn spawn_fs_watcher<R: tauri::Runtime>(handle: tauri::AppHandle<R>) {
         }
         Err(e) => {
             error!(target: "trail::watcher", error = %e, "spawn_watcher failed");
+        }
+    }
+}
+
+/// v0.1.1 B6: classify one debounced filesystem event and emit the matching
+/// Tauri event. The classifier (`watcher::evaluate_change`) is pure; this
+/// function does the I/O — `fs::read_to_string` + `serde_yaml::from_str`
+/// for the YAML read closure, a libSQL query for the known-hash lookup,
+/// and the saga-in-flight registry for the self-write check.
+///
+/// Event-name contract (must stay byte-identical to v0.1.0):
+///   - `packet-changed-externally` → J12 banner (mismatch_type: hash-mismatch,
+///                                              parse-error, or missing).
+///   - `trail-needs-refresh` → sidebar refresh; emitted for `NoOp` outcomes
+///                             so freshly-captured packets show up.
+///
+/// Two latent bugs in the prior inline classifier are closed here:
+///   B6.1 — Non-NotFound `read_to_string` errors (EACCES, EIO) now flow
+///          through `ReadError::Other` → `WatcherDecision::ParseError`,
+///          which emits `packet-changed-externally` with `mismatch_type:
+///          "parse-error"`. The cycle-1.5 code logged at `warn!` and
+///          `continue`'d, silently dropping the event.
+///   B6.2 — `packet_id` is now `Option<String>` on the wire (serialized
+///          as JSON `null` when libSQL has not yet ingested the path).
+///          The cycle-1.5 code used `unwrap_or_default()` → `""`, which
+///          the React filter `payload.packet_id === packetId` silently
+///          dropped on every render of the open packet view.
+fn dispatch_watcher_event<R: tauri::Runtime>(
+    h: &tauri::AppHandle<R>,
+    path: &std::path::Path,
+) {
+    // YAML read closure: returns the parsed serde_yaml::Value, or a
+    // structured ReadError so the classifier can pick the right
+    // WatcherDecision variant (Missing vs ParseError vs Other-as-
+    // ParseError per B6.1).
+    let read_yaml = |p: &std::path::Path| -> Result<serde_yaml::Value, watcher::ReadError> {
+        match std::fs::read_to_string(p) {
+            Ok(text) => {
+                // v0.1.1 B7: gate watcher-observed YAML against
+                // anchor-bomb / oversize attacks. A malicious YAML dropped
+                // into .trail/sessions/ would otherwise hit an unbounded
+                // serde_yaml::from_str on every filesystem-event tick.
+                // Map a yaml_safety rejection to ParseError so the
+                // existing WatcherDecision::ParseError branch surfaces it
+                // as a J12 banner instead of a silent drop.
+                if let Err(safety_err) = yaml_safety::guard(&text) {
+                    return Err(watcher::ReadError::ParseError(format!(
+                        "yaml_safety: {safety_err:?}"
+                    )));
+                }
+                serde_yaml::from_str::<serde_yaml::Value>(&text)
+                    .map_err(|e| watcher::ReadError::ParseError(e.to_string()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(watcher::ReadError::NotFound)
+            }
+            Err(e) => Err(watcher::ReadError::Other(e.to_string())),
+        }
+    };
+
+    // Known-hash lookup closure: returns `packets.last_known_hash` for
+    // the resolved packet_id, or None when the packet has never had a
+    // saved decision.
+    let db_state = h.state::<db::DbState>();
+    let lookup_known_hash = |packet_id: &str| -> Option<String> {
+        match db_state.0.lock() {
+            Ok(conn) => conn
+                .query_row(
+                    "SELECT last_known_hash FROM packets WHERE packet_id = ?1",
+                    [packet_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten(),
+            Err(_) => None,
+        }
+    };
+
+    // Saga-in-flight closure: the registry the saga driver mutates
+    // around its critical-section write.
+    let saga_state = h.state::<ipc::SagaState>();
+    let saga_in_flight = |packet_id: &str| -> bool {
+        saga_state.registry.contains(packet_id)
+    };
+
+    let decision = watcher::evaluate_change(path, read_yaml, lookup_known_hash, saga_in_flight);
+
+    match decision {
+        watcher::WatcherDecision::Unwatched | watcher::WatcherDecision::IgnoreInFlight => {
+            // No emit. Unwatched paths fall outside the packet pattern;
+            // IgnoreInFlight is the UI's own write — the saga's
+            // post-write `registry.clear` is the only signal needed.
+        }
+        watcher::WatcherDecision::NoOp => {
+            // In-sync: hash matches OR no prior hash (fresh capture).
+            // Either way, refresh the trail browser so a newly-captured
+            // packet shows up in the sidebar.
+            let _ = h.emit("trail-needs-refresh", serde_json::json!({}));
+        }
+        watcher::WatcherDecision::External { packet_id, kind } => {
+            let mismatch_type = match kind {
+                watcher::MismatchKind::HashMismatch => "hash-mismatch",
+            };
+            // `evaluate_change` only constructs External after successfully
+            // reading + parsing the YAML's _meta.packet_id, so we have a
+            // concrete packet_id here. Serialize as a JSON string (not
+            // null) so the React filter trips for the open packet.
+            let _ = h.emit(
+                "packet-changed-externally",
+                serde_json::json!({
+                    "packet_id": Some(packet_id),
+                    "mismatch_type": mismatch_type,
+                }),
+            );
+        }
+        watcher::WatcherDecision::ParseError(message) => {
+            // B6.2 reverse-lookup: the classifier couldn't parse the
+            // YAML, so it does not know the packet_id. Reverse-resolve
+            // from the path via libSQL; when the path isn't in libSQL
+            // yet, emit with packet_id: null so the frontend can show
+            // a global "watcher saw an unparseable file" banner rather
+            // than silently dropping the event (the cycle-1.5 behavior
+            // when `unwrap_or_default()` produced an empty string).
+            let resolved_packet_id: Option<String> = match db_state.0.lock() {
+                Ok(conn) => db::select_packet_id_by_path(&conn, path).ok().flatten(),
+                Err(_) => None,
+            };
+            let _ = h.emit(
+                "packet-changed-externally",
+                serde_json::json!({
+                    "packet_id": resolved_packet_id,
+                    "mismatch_type": "parse-error",
+                    "message": message,
+                }),
+            );
+        }
+        watcher::WatcherDecision::Missing => {
+            // Same reverse-lookup as ParseError: the packet_id is
+            // unknown from the classifier's perspective; libSQL may
+            // still know it.
+            let resolved_packet_id: Option<String> = match db_state.0.lock() {
+                Ok(conn) => db::select_packet_id_by_path(&conn, path).ok().flatten(),
+                Err(_) => None,
+            };
+            let _ = h.emit(
+                "packet-changed-externally",
+                serde_json::json!({
+                    "packet_id": resolved_packet_id,
+                    "mismatch_type": "missing",
+                }),
+            );
         }
     }
 }

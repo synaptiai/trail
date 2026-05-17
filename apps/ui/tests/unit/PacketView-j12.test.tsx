@@ -20,9 +20,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Inject a controllable subscribeFsWatch mock so the test can fire
 // watcher events synchronously.
+//
+// v0.1.1 B6: `packet_id` is `string | null` on the wire (was always
+// a string in cycle-1.5; an unresolved packet_id was serialised as ""
+// via `unwrap_or_default`). The empty-string regression test below is
+// now expressed as `packet_id: null`.
 let lastCallback:
   | ((payload: {
-      packet_id: string;
+      packet_id: string | null;
       mismatch_type: 'hash-mismatch' | 'missing' | 'parse-error';
       message?: string;
     }) => void)
@@ -32,7 +37,7 @@ let unsubscribeFn: () => void = () => {};
 vi.mock('@/services/watcher-events', () => ({
   subscribeFsWatch: vi.fn(async (cbs: {
     onPacketChangedExternally?: (payload: {
-      packet_id: string;
+      packet_id: string | null;
       mismatch_type: 'hash-mismatch' | 'missing' | 'parse-error';
       message?: string;
     }) => void;
@@ -154,15 +159,17 @@ describe('<PacketView> J12 banner × all three mismatch types (cycle-1.5 F2)', (
     expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
-  it('does NOT fire when payload.packet_id is empty string (cycle-1 broken state)', async () => {
+  it('does NOT fire when payload.packet_id is null (v0.1.1 B6 wire shape)', async () => {
     // Regression guard: if the Rust-side reverse lookup returns None
     // (path not in libSQL — e.g., a freshly-captured packet not yet
-    // ingested), the watcher emits with packet_id: ''. The React
-    // filter MUST keep that guarantee — never raise the J12 banner
-    // for an empty packet_id, only for a positive match.
+    // ingested), the watcher emits with `packet_id: null` (v0.1.1 B6
+    // replaced the cycle-1.5 `""` sentinel with proper JSON null).
+    // The React filter MUST keep its per-packet guarantee — never
+    // raise the J12 banner for a null packet_id, only for a positive
+    // match on the open packet.
     await mountAndCaptureCallback();
     await act(async () => {
-      lastCallback!({ packet_id: '', mismatch_type: 'parse-error' });
+      lastCallback!({ packet_id: null, mismatch_type: 'parse-error' });
     });
     expect(screen.queryByRole('alert')).toBeNull();
   });

@@ -54,9 +54,7 @@ export function defaultSchemaPath(): string {
   // No candidate exists. Return the production path so the downstream
   // ENOENT message points at the production layout the user can actually
   // act on (reinstall, file an issue, etc.).
-  return resolve(
-    fileURLToPath(new URL(SCHEMA_CANDIDATES[0]!, import.meta.url))
-  );
+  return resolve(fileURLToPath(new URL(SCHEMA_CANDIDATES[0]!, import.meta.url)));
 }
 
 export function compileSchema(schemaPath?: string) {

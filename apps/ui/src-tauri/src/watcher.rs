@@ -92,36 +92,49 @@ pub const DEBOUNCE_MS: u64 = 500;
 // ---------------------------------------------------------------------------
 // Self-race / external-edit classifier (B5 §4.2)
 //
-// The classifier API below is fully implemented and tested but not yet wired
-// into the notify-debouncer-full subscription. Phase 4 cycle-1 review F2-19
-// flagged the unused warnings. Per v0.1.x scope, the integration lands in
-// Sprint 4's full watcher build-out; until then `#[allow(dead_code)]` keeps
-// CI green without dropping the implementation.
+// v0.1.1 B6 refactor (`route watcher through evaluate_change`): this
+// classifier is now the single source of truth for the watcher dispatch
+// loop. `main.rs::spawn_fs_watcher` calls `evaluate_change` once per
+// debounced path and maps the returned `WatcherDecision` to the
+// corresponding Tauri `app.emit()` calls — replacing the prior inline
+// re-implementation that had two latent bugs (non-NotFound read errors
+// silently dropped; parse-error / missing events emitted with an empty
+// `packet_id` when libSQL hadn't yet ingested the path).
 // ---------------------------------------------------------------------------
 
 /// Outcome of classifying a single filesystem event for a packet YAML.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatcherDecision {
     /// Saga-in-flight flag is set; ignore. UI was the writer.
     IgnoreInFlight,
     /// Saga-in-flight is clear AND the on-disk approval_trail hash matches
     /// `packets.last_known_hash`. The saga finished cleanly OR this is a
-    /// no-op rewrite (e.g., `touch packet-1.yml`). No UI notification.
+    /// no-op rewrite (e.g., `touch packet-1.yml`). Caller emits
+    /// `trail-needs-refresh` so the sidebar picks up freshly-captured
+    /// packets.
     NoOp,
-    /// External edit: hash mismatch. Fire J12 with this mismatch_type.
-    External(MismatchKind),
-    /// File parse failed (corrupt YAML on disk). Surface to UI as a
-    /// special J12 variant with reason=parse-error.
+    /// External edit: hash mismatch. Fire J12 with this mismatch_type. The
+    /// `packet_id` was successfully extracted from the on-disk YAML and is
+    /// carried inline so the caller can populate the event payload without
+    /// a second round-trip through libSQL.
+    External {
+        packet_id: String,
+        kind: MismatchKind,
+    },
+    /// File read or YAML parse failed (corrupt YAML on disk, EACCES, EIO,
+    /// etc.). Surface to UI as a J12 variant with reason=parse-error. The
+    /// caller is responsible for reverse-looking-up the `packet_id` from
+    /// the path via libSQL (`select_packet_id_by_path`); when libSQL has
+    /// not yet ingested the packet, the caller emits with `packet_id:
+    /// null`.
     ParseError(String),
     /// File no longer present (deleted between event and read). Treat as
-    /// J12 missing.
+    /// J12 missing. Same `packet_id` resolution rule as `ParseError`.
     Missing,
     /// Path did not match the watched packet pattern; ignore entirely.
     Unwatched,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MismatchKind {
     /// approval_trail hash differs from libSQL.
@@ -140,7 +153,6 @@ pub enum MismatchKind {
 ///
 /// The classifier mirrors the contract in B5 §4.2 verbatim: if-saga-in-flight
 /// → IgnoreInFlight; else hash-compare → NoOp or External.
-#[allow(dead_code)]
 pub fn evaluate_change<R, L, S>(
     path: &Path,
     mut read_yaml: R,
@@ -175,7 +187,10 @@ where
     let known = lookup_known_hash(&packet_id);
     match known {
         Some(stored) if stored == current_hash => WatcherDecision::NoOp,
-        Some(_) => WatcherDecision::External(MismatchKind::HashMismatch),
+        Some(_) => WatcherDecision::External {
+            packet_id,
+            kind: MismatchKind::HashMismatch,
+        },
         // No prior hash on file means this packet has never had a decision
         // saved. The on-disk YAML is canonical-by-default; we treat the
         // event as a no-op (the trail browser will refresh independently).
@@ -183,18 +198,21 @@ where
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ReadError {
     NotFound,
     ParseError(String),
+    /// Non-NotFound, non-parse I/O error (EACCES, EIO, etc.). v0.1.1 B6
+    /// surfaces this through `WatcherDecision::ParseError` so the J12
+    /// "unparseable file" banner fires; the prior inline classifier in
+    /// `main.rs::spawn_fs_watcher` logged at warn and silently dropped
+    /// the event.
     Other(String),
 }
 
 /// Whether `path` is a packet YAML the watcher cares about. Per B5 §4.6:
 /// recursive watch on `.trail/sessions/`; we accept paths matching
 /// `**/sessions/<sid>/packet-N.yml`.
-#[allow(dead_code)]
 pub fn is_packet_yaml(path: &Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n,
@@ -215,7 +233,6 @@ pub fn is_packet_yaml(path: &Path) -> bool {
 /// Parse the `_meta.packet_id` field out of the YAML so the classifier can
 /// look up the libSQL row. Implemented as its own helper so a test can
 /// inject a malformed file without touching the global filesystem.
-#[allow(dead_code)]
 fn parse_packet_id_from_yaml_path<R>(
     path: &Path,
     read_yaml: &mut R,
@@ -425,7 +442,10 @@ mod tests {
         );
         assert_eq!(
             decision,
-            WatcherDecision::External(MismatchKind::HashMismatch)
+            WatcherDecision::External {
+                packet_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+                kind: MismatchKind::HashMismatch,
+            }
         );
     }
 
@@ -522,7 +542,93 @@ mod tests {
         );
         assert_eq!(
             decision,
-            WatcherDecision::External(MismatchKind::HashMismatch)
+            WatcherDecision::External {
+                packet_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+                kind: MismatchKind::HashMismatch,
+            }
         );
+    }
+
+    // -----------------------------------------------------------------
+    // v0.1.1 B6: latent-bug regression tests.
+    //
+    // The prior inline classifier in `main.rs::spawn_fs_watcher` had two
+    // bugs that the eval/emit-mapping refactor closes:
+    //
+    //   B6.1 — Non-NotFound `fs::read_to_string` errors (EACCES, EIO)
+    //          were logged at `warn` and `continue`'d, so the watcher
+    //          silently swallowed I/O failures. `evaluate_change` now
+    //          flows the error through `ReadError::Other(msg)` →
+    //          `WatcherDecision::ParseError(msg)`, which `main.rs` maps
+    //          to `packet-changed-externally` with
+    //          `mismatch_type: "parse-error"`.
+    //
+    //   B6.2 — When the YAML's `_meta.packet_id` couldn't be resolved
+    //          from libSQL (fresh packet not yet INSERTed), the inline
+    //          emit used `unwrap_or_default()` → `""`. The frontend
+    //          filter `payload.packet_id === packetId` silently dropped
+    //          those. The refactor surfaces ParseError / Missing with
+    //          an unresolved `packet_id`; `main.rs` reverse-looks-up
+    //          via libSQL and emits with `Option<String>` (JSON `null`
+    //          when not in DB), so the UI can render a global
+    //          "watcher saw an unparseable file" banner.
+    //
+    // These tests pin the contract at the classifier boundary; the
+    // wire-shape mapping is asserted on the TS side via the contract.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn evaluate_change_non_notfound_read_error_surfaces_as_parse_error_b6_1() {
+        // EACCES / EIO / any non-NotFound I/O error. The classifier
+        // wraps the message into ParseError so the J12 banner fires
+        // (was a silent `warn!` + `continue` in the inline classifier).
+        let decision = evaluate_change(
+            &PathBuf::from(".trail/sessions/abc/packet-1.yml"),
+            |_| Err(ReadError::Other("permission denied (os error 13)".into())),
+            |_| None,
+            |_| false,
+        );
+        match decision {
+            WatcherDecision::ParseError(m) => {
+                assert!(
+                    m.contains("permission denied"),
+                    "expected propagated I/O error message, got {m}"
+                );
+            }
+            other => panic!("expected ParseError for non-NotFound read error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_change_parse_error_carries_no_packet_id_b6_2() {
+        // The classifier cannot recover a packet_id from an unparseable
+        // YAML. The caller (main.rs) must reverse-look-up via libSQL;
+        // when libSQL returns None (fresh packet not yet INSERTed),
+        // the wire payload's packet_id is `null` rather than the
+        // cycle-1 broken empty-string. Pins: ParseError is a
+        // packet_id-less variant.
+        let decision = evaluate_change(
+            &PathBuf::from(".trail/sessions/abc/packet-1.yml"),
+            |_| Err(ReadError::ParseError("invalid YAML at line 3".into())),
+            |_| None,
+            |_| false,
+        );
+        // Pattern-match exhaustively to assert no packet_id field
+        // smuggled into the ParseError variant — the caller is
+        // responsible for resolution, not the classifier.
+        match decision {
+            WatcherDecision::ParseError(m) => {
+                assert_eq!(m, "invalid YAML at line 3");
+            }
+            other => panic!("expected ParseError variant, got {other:?}"),
+        }
+        // Missing has the same packet_id-less shape.
+        let decision_missing = evaluate_change(
+            &PathBuf::from(".trail/sessions/abc/packet-1.yml"),
+            |_| Err(ReadError::NotFound),
+            |_| None,
+            |_| false,
+        );
+        assert_eq!(decision_missing, WatcherDecision::Missing);
     }
 }

@@ -377,12 +377,14 @@ jobs:
               # untouched.
               v_family="${v%%-*}"
               if [[ "$v_family" != "$family" ]]; then continue; fi
-              # Skip already deprecated.
-              existing=$(npm view "$pkg@$v" deprecated 2>/dev/null || echo "")
-              if [[ -n "$existing" && "$existing" != "undefined" ]]; then
-                echo "  $pkg@$v already deprecated; skipping"
-                continue
-              fi
+              # v0.1.1 B13e: always re-deprecate, even if already deprecated.
+              # The pre-B13e skip-if-already-deprecated check left earlier
+              # prereleases carrying out-of-date messages (e.g. rc.4-rc.6
+              # said "Superseded by 0.1.0-rc.7" forever, while rc.7 said
+              # "Superseded by 0.1.0 (stable)"). Idempotency is preserved
+              # because npm deprecate accepts the same message twice
+              # without erroring. Consistency wins over the tiny win of
+              # skipping an npm round-trip.
               # Deprecation message: point users at @next (latest
               # prerelease) for prerelease NEW, or @latest (now points at
               # stable) for stable NEW.

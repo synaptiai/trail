@@ -374,19 +374,19 @@ export function renderMarkdownSummary(packet: Packet, opts: RenderOptions): stri
         void key;
       }
     }
-    const tableClaims = decidedClaims
-      .concat(undecidedClaims)
-      .slice(0, MAX_CLAIM_ROWS);
+    const tableClaims = decidedClaims.concat(undecidedClaims).slice(0, MAX_CLAIM_ROWS);
 
     out.push("| Claim | Text | Evidence | Status |");
     out.push("|---|---|---|---|");
     for (const c of tableClaims) {
-      const text = c.text.length > CLAIM_TEXT_TRUNCATE
-        ? `${c.text.slice(0, CLAIM_TEXT_TRUNCATE - 1)}…`
-        : c.text;
+      const text =
+        c.text.length > CLAIM_TEXT_TRUNCATE
+          ? `${c.text.slice(0, CLAIM_TEXT_TRUNCATE - 1)}…`
+          : c.text;
       const safeText = text.replace(/\|/g, "\\|").replace(/\n/g, " ");
       const evCount = c.evidence_refs.length;
-      const decision = decisionByClaim.get(c.id) ?? (c.stable_id ? decisionByClaim.get(c.stable_id) : undefined);
+      const decision =
+        decisionByClaim.get(c.id) ?? (c.stable_id ? decisionByClaim.get(c.stable_id) : undefined);
       const status = decision ? (decisionLabel[decision.decision] ?? decision.decision) : "—";
       out.push(`| \`${c.id}\` | ${safeText} | ${evCount} ref(s) | ${status} |`);
     }

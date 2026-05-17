@@ -22,7 +22,16 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: Record<string, unknown>) => {
     const handler = mockHandlers.current[cmd];
     if (!handler) throw { kind: 'internal', message: `unmocked: ${cmd}` };
-    return handler(args);
+    // v0.1.1 B3: strict-wrap assertion (Rust IPC dispatch smoke at
+    // `tests/ipc_dispatch_smoke.rs` is the canonical contract pin; this
+    // JS-side check is the second-tier net). A future client.ts regression
+    // that drops the wrapper fails fast here.
+    if (!(args as { args?: unknown }).args) {
+      throw new Error(
+        `test mock expected wrapped envelope { args: ... } from real client.ts; got: ${JSON.stringify(args)}`,
+      );
+    }
+    return handler((args as { args: Record<string, unknown> }).args);
   },
 }));
 
@@ -202,7 +211,11 @@ describe('<M4PostToPrModal> post flow (gh#12 AC-3, AC-5)', () => {
     setHandlers({
       post_to_pr: async (args) => {
         received = args;
-        return { ok: true, pr_url: 'https://example.com/pr/777', destination: 'a/b#777' };
+        return {
+          ok: true,
+          pr_url: 'https://github.com/synaptiai/trail/pull/777',
+          destination: 'a/b#777',
+        };
       },
     });
     render(
@@ -430,7 +443,7 @@ describe('<M4PostToPrModal> error handling (gh#12 AC-7, AC-8)', () => {
         }
         return {
           ok: true,
-          pr_url: 'https://example.com/pr/1',
+          pr_url: 'https://github.com/x/y/pull/1',
           destination: 'x/y#1',
           body_hash_prefix: 'aa',
         };

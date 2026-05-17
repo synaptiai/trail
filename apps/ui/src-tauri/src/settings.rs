@@ -118,12 +118,38 @@ pub fn resolve_settings_path() -> Result<PathBuf, SettingsError> {
     Ok(p.join("settings.json"))
 }
 
+/// v0.1.1 B8: hard cap on `settings.json` size read at boot + on every
+/// `read_settings` IPC. The schema (~7 fields + up to MAX_PINNED_SESSIONS
+/// pin entries) fits comfortably in 16 KB; 64 KB leaves headroom for
+/// future growth. A malicious / corrupted `~/.trail/settings.json` of 1 GB
+/// would otherwise load entirely into memory at boot — the IPC handler
+/// proxies the same path, so DevTools `read_settings` could OOM the
+/// desktop too. Mirrors `READ_PACKET_SIZE_CAP_BYTES` in `ipc.rs` (security
+/// audit P2-3).
+pub const SETTINGS_MAX_BYTES: u64 = 64 * 1024;
+
 /// Read settings from `path`. Missing file → defaults. Malformed → error
 /// surfaced; the caller decides whether to fall back (the IPC handler
 /// returns `IpcError::internal` so the operator sees the real cause).
 pub fn read_settings(path: &Path) -> Result<Settings, SettingsError> {
     if !path.exists() {
         return Ok(Settings::default());
+    }
+    // v0.1.1 B8: size-cap before fs::read so we never stream a pathological
+    // file into memory. Returns a deserialise error variant so the IPC
+    // handler surfaces `IpcError::internal` with the real cause; defaults
+    // are NOT silently substituted (a user editing settings to oversize is
+    // a configuration mistake that should be visible).
+    let stat = fs::metadata(path)?;
+    if stat.len() > SETTINGS_MAX_BYTES {
+        return Err(SettingsError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "settings.json exceeds {}-byte cap (got {} bytes)",
+                SETTINGS_MAX_BYTES,
+                stat.len()
+            ),
+        )));
     }
     let bytes = fs::read(path)?;
     if bytes.is_empty() {

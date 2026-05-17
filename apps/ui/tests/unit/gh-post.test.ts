@@ -26,7 +26,18 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (!handler) {
       throw { kind: 'internal', message: `unmocked: ${cmd}` };
     }
-    return handler(args);
+    // v0.1.1 B3: strict-wrap assertion. The real client wraps payloads as
+    // `{ args: ... }` to match each Rust command's `args: Struct` signature
+    // (see `apps/ui/src/ipc/client.ts:130`). With the Rust IPC dispatch
+    // smoke (`tests/ipc_dispatch_smoke.rs`) now pinning the contract at the
+    // serde-resolver level, JS mocks can enforce the wrapper strictly: a
+    // future client regression that drops the wrapper will fail here too.
+    if (!(args as { args?: unknown }).args) {
+      throw new Error(
+        `test mock expected wrapped envelope { args: ... } from real client.ts; got: ${JSON.stringify(args)}`,
+      );
+    }
+    return handler((args as { args: Record<string, unknown> }).args);
   },
 }));
 
@@ -70,7 +81,7 @@ describe('postToPr (gh#12 AC-3)', () => {
         received = args;
         return {
           ok: true,
-          pr_url: 'https://example.com/p/77',
+          pr_url: 'https://github.com/synaptiai/trail/pull/77',
           destination: 'a/b#77',
           body_hash_prefix: 'aa',
         };

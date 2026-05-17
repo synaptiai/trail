@@ -120,7 +120,14 @@ export async function invoke<R = unknown>(
   if (!bridge) throw new IpcUnavailableError();
   let raw: unknown;
   try {
-    raw = await bridge.invoke(command, parsed.data);
+    // Every Rust command in src-tauri/src/ipc.rs takes a single named
+    // parameter `args: SomeStruct`. Tauri 2's serde-driven argument resolver
+    // expects the JS payload to be `{ args: <SomeStruct> }` — the outer
+    // object's keys map to parameter names. Passing `parsed.data` directly
+    // produces "missing required key args" at runtime for every command.
+    // (Tauri's mock_runtime under the `test` feature has looser resolution
+    // and accepted the flat shape — that's how this shipped in v0.1.0.)
+    raw = await bridge.invoke(command, { args: parsed.data });
   } catch (err) {
     throw new IpcInvocationError(asIpcError(err));
   }

@@ -4,6 +4,128 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-05-16
+
+First patch release after the v0.1.0 OSS MLP. The 0.1.0 desktop shell
+was non-functional on install (every Tauri IPC failed with `missing
+required key args`); 0.1.1 closes that ship-blocker and ships hardening
+across the entire desktop surface uncovered by a comprehensive review
+pass (security + code + test-methodology agents in parallel).
+
+### Fixed — P0 ship-blocker
+
+- **IPC wrapper-args mismatch (commit 9f3c2f0)**. Every `#[tauri::command]`
+  has `args: Struct` parameter shape; Tauri 2's serde resolver expects
+  the JS payload to be `{ args: ... }`. The IPC client at
+  `apps/ui/src/ipc/client.ts:123` was passing `parsed.data` directly,
+  producing `invalid args 'args' for command X: missing required key
+  args` at runtime for every IPC call. Fixed by wrapping the payload
+  as `{ args: parsed.data }`.
+
+### Added — regression infrastructure
+
+- **Production-runtime IPC dispatch smoke** (`apps/ui/src-tauri/tests/
+  ipc_dispatch_smoke.rs`, commit 33a599c). Boots `tauri::test::
+  mock_builder()` against the production handler set and dispatches
+  every IPC with a schema-valid `{ args: ... }` payload through the
+  real serde resolver. Includes a regression canary that sends a flat
+  envelope and asserts the v0.1.0 error verbatim. 15 new tests + 167
+  inline tests from pulled modules.
+- **Strict-wrap test mock assertions**. The three direct-bridge mocks
+  (`gh-post`, `M4PostToPrModal`, `M6SettingsModal-cli-bridge`) now
+  throw on missing `args` wrapper instead of the v0.1.1 stop-gap
+  `?? args` fallback. The Rust IPC smoke is the canonical pin; these
+  are the second-tier net.
+- **Playwright e2e job in CI** (`.github/workflows/ui-quality-gates.yml`).
+  Browser-mode Playwright was passing locally but never CI-gated.
+  Now runs after `ts-quality` against the production vite preview
+  bundle.
+
+### Fixed — security hardening
+
+- **XSS via subprocess stderr `pr_url`** (commit 1c97de1). A compromised
+  capture binary (settings-set `capture_cli_path`) or PATH hijack could
+  emit `posted packet to javascript:fetch(...)` and one click on the
+  post-success toast would execute script in the webview (the CSP at
+  `tauri.conf.json` does NOT block `javascript:` hrefs in same-origin
+  webviews). Closed at three layers: anchored Rust regex in
+  `cli_bridge.rs::parse_post_outcome` and `parse_decide_outcome`;
+  Zod regex on `postToPrResponseSchema.pr_url` and
+  `decideOnPrResponseSchema.pr_url`; defensive `https://github.com/`
+  prefix check in `PacketView.tsx`. 9 new Rust regression tests.
+- **YAML safety gate at all parse sites**. Saga read path already had
+  `yaml_safety::guard()`; cold paths (boot recovery, patterns load,
+  watcher external-edit) did not. A hostile YAML in any cwd-ancestor
+  (`bin/trail-redaction-patterns.yml`) could OOM the desktop via
+  anchor-bomb. Extracted `yaml_safety::guard(text)` helper and applied
+  at all 4 parse sites.
+- **`settings.json` size cap** — `SETTINGS_MAX_BYTES = 64KB` in
+  `settings::read_settings`. A 1GB-corrupted/malicious settings file
+  would otherwise load entirely into memory at boot.
+- **`read_packet` absolute-path reject** — `apps/ui/src-tauri/src/
+  ipc.rs:read_packet` previously only rejected `..` traversal in
+  `yaml_path`. Absolute paths (`/etc/passwd`) are now rejected too.
+  Defensive close against future capture-side INSERTs that haven't
+  landed yet but are coming in v0.1.x.
+
+### Fixed — desktop refactor (commit 3825840)
+
+- **Watcher dead-code-on-the-hot-path consolidation**. `watcher.rs::
+  evaluate_change` was fully tested but never called; `main.rs`
+  reimplemented the same classifier inline with two latent bugs:
+  - **B6.1**: non-NotFound `fs::read_to_string` errors (EACCES, EIO)
+    were silently dropped (`warn! + continue`). Now flow through
+    `ReadError::Other` → `WatcherDecision::ParseError` and emit
+    `packet-changed-externally` with `mismatch_type: 'parse-error'`.
+  - **B6.2**: when `_meta.packet_id` couldn't be resolved from libSQL
+    (fresh packet not yet INSERTed), the event was emitted with
+    `packet_id: ''`. Wire shape is now `Option<String>` (`null` when
+    unresolved); the React filter switches on null at the type level.
+- Dropped `#[allow(dead_code)]` on `WatcherDecision`, `MismatchKind`,
+  `evaluate_change`, `ReadError`, `is_packet_yaml`,
+  `parse_packet_id_from_yaml_path` — all now reachable from production.
+- 2 new B6 regression tests + 15 total watcher tests passing.
+
+### Fixed — audit-mode
+
+- **Per-event audit-log persona gating**. `audit_log_append` previously
+  rejected ALL auditor calls, but auditor IS the legitimate user of
+  `tamper_dismissed` / `tamper_re_verified` events (audit mode reviews
+  frozen trees and dismissals must be recorded). Refactored to
+  per-event-type gating: only `settings_changed_via_ui` rejects
+  auditor (the original W2 threat).
+
+### Changed — release pipeline
+
+- **Auto-deprecation polish**. The skip-if-already-deprecated check
+  in `release.yml` is removed. Re-deprecates idempotently with the
+  current message so prereleases stop carrying stale "Superseded by
+  <older-rc>" messages.
+
+### Deferred to v0.1.2
+
+- macOS code-signing + notarisation (Apple Developer Program enrolment
+  required). v0.1.1 ships unsigned with the `xattr -dr com.apple.
+  quarantine` workaround documented in release notes.
+- `seed_stress_packets` release-binary symbol audit + auditor reject.
+- Auditor `pinned_sessions`-only write allowance.
+- `apps/capture` CI workflow (#75).
+- High-entropy regex SHA exclusion (#77).
+- Canonical fixture regeneration with Layer 1 active (#78).
+- DF-S6 full fix (custom js-yaml schema or py-reference stringify).
+- `#[allow(dead_code)]` audit in `ipc.rs`.
+
+### Test surface delta
+
+- @trail/ui: 508 / 508 (no net change; mocks tightened).
+- @synapti/trail-capture: 329 passed | 3 skipped (no net change).
+- @synapti/trail-audit: 77 / 77 (no net change).
+- trail-ui (Rust): 174 → **356** (+15 IPC dispatch smoke + 167 inline tests via `#[path]`, +2 B6 watcher regressions, +9 B1 url-shape regressions, +3 B5 audit-event-gating).
+
+Acceptance gate for v0.1.1 — the same `npm install -g @synapti/trail-
+capture && trail packet generate → post → decide → review in desktop`
+loop that v0.1.0 botched at the desktop step.
+
 ## [0.1.0-rc.7] — 2026-05-15
 
 Seventh release candidate. Substance is identical to rc.6 — same fixes,

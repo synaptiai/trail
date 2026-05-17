@@ -523,6 +523,20 @@ export const packetResponseSchema = z.object({
 });
 
 /**
+ * Anchored GitHub PR URL pattern (v0.1.1 B1: XSS hardening).
+ *
+ * Mirrors `github_pr_url_regex()` in `apps/ui/src-tauri/src/cli_bridge.rs`.
+ * The Rust side parses `pr_url` from a subprocess's stderr; if the binary
+ * is compromised or PATH-hijacked, it could emit `javascript:fetch(...)`
+ * and the React toast at `PacketView.tsx` would render it as a clickable
+ * `<a href>` (the CSP at `tauri.conf.json` does NOT block `javascript:`
+ * hrefs in same-origin webviews). Both the Rust parser and this Zod
+ * schema must agree; one without the other is incomplete defense.
+ */
+const githubPrUrlRegex =
+  /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/[1-9][0-9]*(?:\/|\?[^\s]*)?$/;
+
+/**
  * `post_to_pr` response (Sprint 5 — gh#12 AC-3, AC-5): the Rust
  * handler returns the parsed PR URL, body_hash prefix (first 16 hex
  * chars of the sha256 over posted markdown — sufficient for tamper
@@ -532,7 +546,7 @@ export const packetResponseSchema = z.object({
  */
 export const postToPrResponseSchema = z.object({
   ok: z.boolean(),
-  pr_url: z.string().url().optional(),
+  pr_url: z.string().regex(githubPrUrlRegex).optional(),
   destination: z.string().optional(),
   body_hash_prefix: z
     .string()
@@ -547,7 +561,7 @@ export const postToPrResponseSchema = z.object({
  */
 export const decideOnPrResponseSchema = z.object({
   ok: z.boolean(),
-  pr_url: z.string().url().optional(),
+  pr_url: z.string().regex(githubPrUrlRegex).optional(),
   claim_id: z.string().min(1),
   decision: decisionKindSchema,
 });
@@ -660,7 +674,22 @@ export type IpcEvent =
   | { name: 'packet-changed'; payload: { packet_id: string } }
   | {
       name: 'packet-changed-externally';
-      payload: { packet_id: string; mismatch_type: 'hash-mismatch' | 'missing' | 'parse-error' };
+      /**
+       * `packet_id` is nullable on the wire as of v0.1.1 B6: when the
+       * watcher receives a non-NotFound read error (EACCES, EIO) or a
+       * parse-error / missing event for a path libSQL has not yet
+       * ingested (fresh capture not yet INSERTed), the Rust side reverse-
+       * looks-up via `db::select_packet_id_by_path` and emits `null` on
+       * failure. Frontend MUST tolerate `null` and route those events to
+       * a global "watcher saw an unparseable file" banner (not the
+       * per-packet J12 filter, which keys on `packet_id === packetId`
+       * and correctly drops null/empty mismatches).
+       */
+      payload: {
+        packet_id: string | null;
+        mismatch_type: 'hash-mismatch' | 'missing' | 'parse-error';
+        message?: string;
+      };
     }
   | { name: 'trail-needs-refresh'; payload: Record<string, never> }
   | { name: 'decision-saved'; payload: { packet_id: string; claim_id: string } }

@@ -81,6 +81,56 @@ jobs:
           path: apps/ui/dist
           retention-days: 1
 
+  e2e-playwright:
+    # v0.1.1 B12: Playwright was passing locally but never CI-gated. The
+    # v0.1.0 IPC bug would NOT have been caught here (browser-mode mocks the
+    # bridge), but enforcing the browser-mode tier closes a class of bugs the
+    # vitest-only gate cannot catch (vite preview production-bundle render,
+    # 1000-packet sidebar cold-render budget, real Chromium rendering).
+    # The deeper `tauri` mode runs nightly via a separate workflow (TBD).
+    name: E2E — Playwright (browser mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: ts-quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download built frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+
+      - name: Install Playwright browsers (Chromium only)
+        run: pnpm --filter @trail/ui exec playwright install --with-deps chromium
+
+      - name: Run Playwright E2E (browser mode)
+        run: pnpm --filter @trail/ui run e2e
+        env:
+          TRAIL_E2E_MODE: browser
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/ui/playwright-report
+          retention-days: 7
+
   rust-quality:
     name: Rust — cargo check + cargo test
     runs-on: ubuntu-latest

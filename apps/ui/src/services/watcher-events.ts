@@ -21,7 +21,15 @@ import { IpcUnavailableError, listen } from '@/ipc/client';
 import type { MismatchType } from '@/ipc/contract';
 
 export interface ExternalChangePayload {
-  packet_id: string;
+  /**
+   * `packet_id` is nullable as of v0.1.1 B6 — see the wire-shape
+   * comment on `IpcEvent['packet-changed-externally']` in
+   * `@/ipc/contract`. The PacketView per-packet J12 filter
+   * (`payload.packet_id === packetId`) correctly drops null
+   * mismatches; a future global "unparseable-file" banner can listen
+   * here and surface null events at app scope.
+   */
+  packet_id: string | null;
   mismatch_type: MismatchType;
   message?: string;
 }

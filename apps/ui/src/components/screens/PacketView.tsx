@@ -561,7 +561,7 @@ export function PacketView({
           title="Posted to PR"
           onDismiss={() => setPostToast(null)}
         >
-          {postToast.pr_url ? (
+          {postToast.pr_url && postToast.pr_url.startsWith('https://github.com/') ? (
             <p className="type-body-sm" data-testid="post-toast-detail">
               Posted to{' '}
               <a

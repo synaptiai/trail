@@ -49,6 +49,25 @@ pub fn check_anchor_count(input: &str) -> Result<(), YamlSafetyError> {
     Ok(())
 }
 
+/// v0.1.1 B7: combined size + anchor-count gate, applied at every YAML
+/// parse site in the production code (saga read path, boot recovery,
+/// pattern file load, watcher external-edit parse). The saga path had
+/// this gate inline post-cycle-3 C3-S-SEC-4; extracting as a helper closes
+/// the same anchor-bomb DoS surface on the three OTHER parse sites that
+/// were inadvertently skipped (boot recovery and the patterns load can be
+/// hit by a hostile YAML in any ancestor of cwd before Trail launches —
+/// CWD-trust risk per security audit P3-6).
+///
+/// Returns `Err(...)` if the input violates either cap; the caller maps
+/// to whichever domain-error variant fits (saga path uses
+/// `SagaError::YamlSafety`; the watcher/boot paths can `.warn!` and skip
+/// the file).
+pub fn guard(input: &str) -> Result<(), YamlSafetyError> {
+    check_size(input.as_bytes())?;
+    check_anchor_count(input)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
