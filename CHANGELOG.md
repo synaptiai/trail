@@ -4,6 +4,27 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security — gh#8 (iii)+(iv): seed_stress_packets handler-body auditor rejection
+
+Defence-in-depth on the dev / `--features test-fixtures` `seed_stress_packets`
+IPC. Production release builds already compile the handler out via
+`#[cfg(any(debug_assertions, feature = "test-fixtures"))]`, but on dev /
+E2E builds where the symbol IS registered, an auditor-mode renderer could
+invoke the state-mutation IPC via `__TAURI_INTERNALS__.invoke(...)`.
+
+- `SeedStressPacketsArgs` now carries a `pub persona: Persona` field
+  (closed enum mirroring the existing C15 sweep).
+- The handler body calls `reject_auditor(args.persona, "seed_stress_packets")?`
+  at entry, returning the typed `IpcError::PersonaForbidden` variant.
+- Three `b9_seed_stress_packets_*` unit tests pin the contract:
+  `rejects_auditor`, `accepts_creator`, `accepts_reviewer`.
+
+Public issue #8 criteria (iii) + (iv) are addressed. Criteria (i)
+(per-platform binary `nm`/`strings` audit step in CI) and (ii)
+(fail-on-symbol-present) remain open in a separate cycle.
+
 ## [0.1.4] — 2026-05-18
 
 Cross-language IPC contract verification + production bug fix surfaced
