@@ -1,6 +1,6 @@
 {
   "name": "@synapti/trail-capture",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Trail Layer 1: post-hoc capture from Claude Code transcripts. TypeScript port of py-reference/cli/trail.py.",
   "license": "Apache-2.0",
   "author": "Synapti AI",
