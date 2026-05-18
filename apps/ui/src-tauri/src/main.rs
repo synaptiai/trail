@@ -314,18 +314,21 @@ mod layer2_embed_tests {
     #[test]
     fn load_layer2_patterns_uses_compile_time_embed_only() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs");
-        let src = fs::read_to_string(path).expect("read main.rs via CARGO_MANIFEST_DIR anchor");
+        let src = fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read main.rs at {path}: {e}"));
         // The test mod is above the function definition AND mentions
         // the function name in literals (error messages, this marker
         // string itself). `rfind` pins to the last occurrence — the
         // actual definition — regardless of how many literal mentions
         // appear in the source above it.
         let fn_marker = "fn load_layer2_patterns() -> Result";
-        let fn_start = src.rfind(fn_marker).expect("load_layer2_patterns must exist");
+        let fn_start = src
+            .rfind(fn_marker)
+            .unwrap_or_else(|| panic!("load_layer2_patterns must exist in {path}"));
         // Find the opening brace of the function body.
         let body_open_rel = src[fn_start..]
             .find('{')
-            .expect("load_layer2_patterns must have a body");
+            .unwrap_or_else(|| panic!("load_layer2_patterns must have a body in {path}"));
         let body_open = fn_start + body_open_rel;
         // Walk forward, counting brace depth, to find the matching close.
         let mut depth = 0i32;
@@ -478,6 +481,13 @@ fn load_layer2_patterns() -> Result<Vec<(String, regex::Regex)>, String> {
     // the embedded YAML — even though it's trusted at build time, the
     // anchor-bomb / size check is cheap and preserves the gate against
     // future YAML changes that might violate the cap.
+    //
+    // gh#9 cycle-2 SEC-1 anchor pin: a second `include_bytes!` against
+    // the same path makes a future move of main.rs (e.g., extraction
+    // into a deeper crate) fail the build with a clear "file not
+    // found" rather than silently re-pointing at a different file at a
+    // different depth. Cheap and self-documenting.
+    const _PATTERNS_ANCHOR: &[u8] = include_bytes!("../../../../bin/trail-redaction-patterns.yml");
     let embedded = include_str!("../../../../bin/trail-redaction-patterns.yml");
     parse_patterns_str(embedded)
 }
@@ -512,12 +522,22 @@ fn resolve_trail_sessions_dir() -> Option<std::path::PathBuf> {
 fn parse_patterns_str(raw: &str) -> Result<Vec<(String, regex::Regex)>, String> {
     yaml_safety::guard(raw)
         .map_err(|e| format!("patterns file rejected by yaml_safety: {e:?}"))?;
-    let v: serde_yaml::Value = serde_yaml::from_str(raw).map_err(|e| e.to_string())?;
+    let v: serde_yaml::Value = serde_yaml::from_str(raw)
+        .map_err(|e| format!("bundled patterns YAML parse: {e}"))?;
     let arr = v
         .get("patterns")
         .and_then(|p| p.as_sequence())
         .ok_or_else(|| "patterns: not a sequence".to_string())?;
-    let arr_len = arr.len();
+    // gh#9 cycle-2 F1/ERR-1: explicit empty-array gate. `patterns: []`
+    // deserializes to an empty sequence (not None), so the `ok_or_else`
+    // above doesn't fire; without this check the empty-after-skip guard
+    // at the loop's tail would also fall through (its `arr_len > 0`
+    // qualifier was dropped — see below — but a separate early Err
+    // surfaces the empty-catalog case more cleanly than waiting for the
+    // tail check).
+    if arr.is_empty() {
+        return Err("patterns: empty sequence (no entries to compile)".to_string());
+    }
     let mut out = Vec::new();
     for entry in arr {
         let name = entry
@@ -547,20 +567,22 @@ fn parse_patterns_str(raw: &str) -> Result<Vec<(String, regex::Regex)>, String> 
             ),
         }
     }
-    // gh#9 cycle-2 ERR-1: if every catalog entry failed to compile, the
-    // strict-redaction gate would silently run with an empty pattern set
-    // — saga's Layer 2 scan would never catch anything, and the caller's
-    // `unwrap_or_else(|| empty_set)` wouldn't fire because we'd return
-    // Ok(empty). Surface this as Err so the boot-time fallback log is
-    // taken intentionally. The single-pattern-failure case (`out.len() <
-    // arr_len` but `out.len() > 0`) remains silent-skip — those failures
-    // are tolerated by design (e.g., a JS-only inline-flag pattern in a
-    // user-supplied YAML).
-    if out.is_empty() && arr_len > 0 {
-        return Err(format!(
-            "all {} pattern entries failed to compile; refusing to ship empty Layer 2 set",
-            arr_len
-        ));
+    // gh#9 cycle-2 F1/ERR-1: if every catalog entry failed to compile,
+    // the strict-redaction gate would silently run with an empty pattern
+    // set — saga's Layer 2 scan would never catch anything, and the
+    // caller's `unwrap_or_else(|| empty_set)` wouldn't fire because we'd
+    // return Ok(empty). Surface this as Err so the boot-time fallback
+    // log is taken intentionally. The single-pattern-failure case
+    // (`out.len() < input` but `out.len() > 0`) remains silent-skip —
+    // those failures are tolerated by design (e.g., a JS-only inline-
+    // flag pattern in a user-supplied YAML).
+    //
+    // The early `if arr.is_empty()` gate above catches `patterns: []`
+    // explicitly. The check here covers the "all entries failed to
+    // compile" case where the input was non-empty but `out` is.
+    if out.is_empty() {
+        return Err("all pattern entries failed to compile; refusing to ship empty Layer 2 set"
+            .to_string());
     }
     Ok(out)
 }

@@ -14,12 +14,26 @@ import {
 function gitCheckoutAvailable(): boolean {
   // The gh#9 AC#1 test invariant ("exactly one committed bin/*.yml")
   // is a property of the source repository, not of an installed
-  // package. Detect a working .git directory at the repo root; when
-  // absent (npm-installed tarball, sandboxed CI without .git), skip
-  // the test rather than fail with `git ls-files` exit 128.
+  // package. Detect both:
+  //   (a) a working .git entry at the repo root (.git can be a dir for
+  //       a normal clone OR a file for a git worktree gitlink), and
+  //   (b) the workspace identity matches Trail itself — guards against
+  //       a coincidental ancestor .git in a developer's nested
+  //       workspace (gh#9 cycle-2 F2).
+  // When either check fails (npm-installed tarball, sandboxed CI
+  // without .git, or a non-Trail workspace), skip the test rather than
+  // fail with `git ls-files` exit 128 or assert against the wrong repo.
   const here = dirname(fileURLToPath(import.meta.url));
   const repoRoot = resolve(here, "..", "..", "..");
-  return existsSync(join(repoRoot, ".git"));
+  if (!existsSync(join(repoRoot, ".git"))) return false;
+  const pkgPath = join(repoRoot, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { name?: string };
+    return pkg.name === "trail";
+  } catch {
+    return false;
+  }
 }
 
 describe("loadPatterns — exit 4 sub-shapes (criterion 7 / spec §8.3 row 4)", () => {
