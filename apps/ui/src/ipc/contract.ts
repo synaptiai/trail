@@ -40,7 +40,17 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 export const ulidSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/, 'invalid ULID');
-export const isoDateTimeSchema = z.string().datetime();
+// `.datetime({ offset: true })` accepts both `Z` and explicit offset suffixes
+// (`+00:00`, `-05:00`, etc.). Without `offset: true` Zod's default REJECTS
+// any offset other than `Z`, and `saga-client.nowIso()` emits `+00:00` —
+// the schema/capture parity contract mandates the explicit offset form,
+// matching apps/capture/src/post/posted-to-pr.ts::nowIso character-for-
+// character (PR #7 cycle-4 F25). Without `{ offset: true }`, every
+// save_decision / override_risk IPC failed Zod arg validation at the
+// React boundary; the catch block in ClaimsTab silently logged the
+// failure and the durable persistence marker never set. Surfaced by the
+// Sprint 6 perf gate E2E in the gh#2 land cycle (2026-05-18).
+export const isoDateTimeSchema = z.string().datetime({ offset: true });
 export const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 
 export type RiskLevel = 'low' | 'med' | 'high' | 'crit';

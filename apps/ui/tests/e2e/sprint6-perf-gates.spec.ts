@@ -59,63 +59,99 @@ interface SidebarRow {
   posted_to_pr_count: number;
 }
 
-const FIXTURE_PACKET_YAML = `_meta:
+// v0.1.1-schema-valid packet. Mirror of tests/unit/packet-loader.test.ts::
+// MINIMAL_PACKET_YAML — keeps the perf-gate spec aligned with the
+// canonical Ajv schema at schema/pr-change-packet.v0.1.1.schema.json.
+//
+// The previous fixture was a Sprint-2-era shape that pre-dated the v0.1.1
+// strict-validation pipeline (it lacked packet_version, pr, task_intent,
+// commands_run, test_evidence, provenance — all required by the schema).
+// Ajv rejection surfaced as "Packet failed schema validation" in PacketView,
+// the .packet-header never mounted, and the open-packet perf gate's
+// MutationObserver hit its 5_000ms safety timeout instead of resolving with
+// the actual render time.
+const FIXTURE_PACKET_YAML = `
+packet_version: 0.1.1
+_meta:
   packet_id: 01ARZ3NDEKTSV4RRFFQ69G5FAV
-  schema_version: 0.1.1
-  generated_at: 2026-05-09T12:00:00.000+00:00
+  generated_at: '2026-05-09T12:00:00.000+00:00'
   generator:
     name: trail
     version: 0.1.0-dev
-  packet_n: 1
-  is_recapture: false
-git:
+  schema_url: schema/pr-change-packet.v0.1.1.yml
+  capture_method: post_hoc
+  parent_packet_id: null
+pr:
+  provider: github
   repository: synaptiai/trail
-  branch: main
-  base_sha: 0000000000000000000000000000000000000000
-  head_sha: 1111111111111111111111111111111111111111
-  files_changed: 1
-  lines_added: 3
-  lines_deleted: 1
-  modules_touched:
-    - src
+  branch: feature/perf
+  base_branch: origin/main
+  pr_number: null
+  author: test@example.com
+task_intent:
+  source_type: prompt
+  source_ref: PROMPT-PERF
+  summary: minimal packet for perf-gate E2E
+  acceptance_criteria: []
 agent_session:
+  tool: claude-code
+  model: claude-opus-4-7
+  models:
+  - claude-opus-4-7
+  started_at: '2026-05-09T11:00:00.000+00:00'
+  ended_at: '2026-05-09T11:30:00.000+00:00'
   session_id: 18e374b5-4eb9-424d-a3ff-a639d1c6fada
-  agent: claude-code
-  started_at: 2026-05-09T11:00:00.000+00:00
-  ended_at: 2026-05-09T11:30:00.000+00:00
-  file_history_count: 12
+  transcript_summary: []
+  prompts:
+    initial: 'perf-gate fixture'
+    followups: []
+  redaction_metadata:
+    pattern_set_version: 0.1.3
+    redactions_applied: 0
+    redactions_by_pattern: {}
+    validation_errors: []
+    skipped_files: []
+diff_summary:
+  base_sha: '0000000000000000000000000000000000000000'
+  head_sha: '1111111111111111111111111111111111111111'
+  files_changed: 1
+  lines_added: 1
+  lines_deleted: 0
+  modules_touched: []
+  semantic_changes:
+  - id: DIFF-001
+    description: Wrote /tmp/perf.ts (10 chars)
+    files: ['/tmp/perf.ts']
+    operation: write
+    excerpts: []
+commands_run: []
+test_evidence:
+  passed: []
+  failed: []
+  not_run: []
+provenance:
+  authorship:
+    ai_generated_estimate: high
+    human_modified_estimate: low
+    method: post-hoc-transcript
+  agent_touched_files:
+  - /tmp/perf.ts
+  human_touched_files: []
 summary:
-  one_line: Perf-gate fixture
-  details: |
-    Single-claim fixture for Sprint 6 perf E2E.
-claims:
+  claims:
   - id: CLAIM-001
     stable_id: aaaaaaaaaaaaaaaa
-    text: Perf fixture claim
+    text: Perf-gate fixture claim
     evidence_refs:
-      - DIFF-001
+    - DIFF-001
     confidence: supported
-    risk_level: med
-diff_summary:
-  semantic_changes:
-    - id: DIFF-001
-      description: Edited src/perf.ts
-      files:
-        - src/perf.ts
-      operation: edit
-      excerpts:
-        - kind: before
-          text: const x = 1;
-          elided: false
-        - kind: after
-          text: const x = 2;
-          elided: false
-redaction_summary:
-  total: 0
-  by_kind: {}
-  redactions: []
+    synthesis_mode: mechanical
+    risk_classification:
+      agent: { level: med, rationale: smoke }
+      creator_override: { level: null, reason: null, at: null, by: null }
+      reviewer_override: { level: null, reason: null, at: null, by: null }
+  ungrounded_claim_count: 0
 approval_trail: []
-posted_to_pr: []
 `;
 
 function seedRow(): SidebarRow {
@@ -150,8 +186,12 @@ async function installIpcMock(page: Page, opts: { packetYaml: string }): Promise
       audit_log_append: () => ({ ok: true }),
       subscribe_fs_watch: () => ({ ok: true }),
       subscribe_settings_change: () => ({ ok: true }),
-      read_packet: (args) => ({
-        packet_id: (args as { packet_id: string }).packet_id,
+      read_packet: () => ({
+        // Hardcode the ULID — production invokes are wrapped as
+        // `{ args: { packet_id } }` (v0.1.1 IPC wrapper-args contract), and
+        // every other e2e spec hardcodes the same ULID rather than dig the
+        // nested arg out. Aligns with the single-row fixture seedRow() emits.
+        packet_id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
         schema_version: '0.1.1',
         yaml_text: packetYaml,
         yaml_path: '/test/perf-fixture.yml',
@@ -190,7 +230,16 @@ test.describe('Sprint 6 — perf gates (gh#13 AC-3)', () => {
     // round-trip.
     const elapsed = await page.evaluate(() => {
       return new Promise<number>((resolve) => {
-        const sidebarRow = document.querySelector('.sidebar__row');
+        // Click the inner button — the onClick handler is on
+        // `.sidebar__row-button` (TrailSidebar.tsx:661-662), not the
+        // outer `.sidebar__row` container. A native HTMLElement.click()
+        // dispatched on the parent does NOT propagate to the child's
+        // React onClick (events bubble up, not down). Playwright's
+        // page.locator(...).click() works on `.sidebar__row` because
+        // it's a real mouse click at the row's coordinates and the
+        // button fills the row visually — but our inline measurement
+        // uses native .click(), which requires the exact handler target.
+        const sidebarRow = document.querySelector('.sidebar__row-button');
         if (!sidebarRow) {
           resolve(-1);
           return;
@@ -334,11 +383,16 @@ test.describe('Sprint 6 — perf gates (gh#13 AC-3)', () => {
               optimistic = performance.now() - t0;
             }
           }
-          // Durable: the row gains data-decision-persisted="true" or the
-          // optimistic flag flips to a finalized state.
+          // Durable: the row gains data-decision-persisted="true". The
+          // attribute is set on the ClaimRow element itself (see
+          // apps/ui/src/components/screens/ClaimRow.tsx:88), so we check
+          // both `claim.getAttribute(...)` AND `querySelector` — mirroring
+          // the dual check used for optimistic above. The previous logic
+          // only queried descendants and silently never resolved durable.
           if (
             optimistic >= 0 &&
-            claim.querySelector('[data-decision-persisted="true"]')
+            (claim.getAttribute('data-decision-persisted') === 'true' ||
+              claim.querySelector('[data-decision-persisted="true"]'))
           ) {
             durable = performance.now() - t0;
             observer.disconnect();

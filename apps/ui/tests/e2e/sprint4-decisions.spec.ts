@@ -20,54 +20,95 @@ interface MockedInvocation {
   args: Record<string, unknown>;
 }
 
-const PACKET_FIXTURE_YAML = `_meta:
+// v0.1.1-schema-valid packet. Mirror of tests/unit/packet-loader.test.ts::
+// MINIMAL_PACKET_YAML — keeps this spec aligned with the canonical Ajv
+// schema. The previous fixture was a pre-v0.1.1 shape; Ajv rejected with
+// 37 errors and PacketView never mounted ClaimsTab, so the test couldn't
+// observe "updates redirect_uri allowlist" no matter how long it waited.
+// Surfaced by the gh#2 ship cycle (2026-05-18) once the unrelated
+// packet-loader-test fixture skip-if-absent fix let ts-quality reach the
+// e2e job for the first time on synaptiai/trail main.
+const PACKET_FIXTURE_YAML = `
+packet_version: 0.1.1
+_meta:
   packet_id: 01ARZ3NDEKTSV4RRFFQ69G5FAV
-  schema_version: 0.1.1
-  session_id: session-x
-  parent_packet_id: null
-  is_recapture: false
-  packet_n: null
-  capture_started_at: 2026-05-09T12:00:00+00:00
-  generated_at: 2026-05-09T12:00:00+00:00
-  schema_validation:
-    method: ajv-strict
-    pattern_set_version: 0.1.3
-  capture_meta_hash: deadbeef
+  generated_at: '2026-05-09T12:00:00.000+00:00'
   generator:
-    name: trail-cli
+    name: trail
     version: 0.1.0-dev
-git:
-  repo_path: /tmp/repo
+  schema_url: schema/pr-change-packet.v0.1.1.yml
+  capture_method: post_hoc
+  parent_packet_id: null
+pr:
+  provider: github
+  repository: synaptiai/trail
   branch: feature/sprint-4
-  base_branch: main
-  base_commit: aaaaaaaa
-  head_commit: bbbbbbbb
-  is_dirty: false
-  staged_files: []
-  staged_lines: { added: 0, removed: 0 }
-  diffs: []
+  base_branch: origin/main
+  pr_number: null
+  author: test@example.com
+task_intent:
+  source_type: prompt
+  source_ref: PROMPT-SPRINT-4
+  summary: minimal packet for sprint-4 decisions e2e
+  acceptance_criteria: []
 agent_session:
-  source_kind: claude
-  source_path: /tmp/session.jsonl
+  tool: claude-code
+  model: claude-opus-4-7
+  models:
+  - claude-opus-4-7
+  started_at: '2026-05-09T11:00:00.000+00:00'
+  ended_at: '2026-05-09T11:30:00.000+00:00'
+  session_id: session-x
+  transcript_summary: []
+  prompts:
+    initial: 'sprint-4 fixture'
+    followups: []
   redaction_metadata:
     pattern_set_version: 0.1.3
-    pattern_set_origin: bundled
     redactions_applied: 0
-    redactions_by_pattern: []
+    redactions_by_pattern: {}
     validation_errors: []
+    skipped_files: []
+diff_summary:
+  base_sha: '0000000000000000000000000000000000000000'
+  head_sha: '1111111111111111111111111111111111111111'
+  files_changed: 1
+  lines_added: 1
+  lines_deleted: 0
+  modules_touched: []
+  semantic_changes:
+  - id: DIFF-001
+    description: Wrote /tmp/redirect.ts (10 chars)
+    files: ['/tmp/redirect.ts']
+    operation: write
+    excerpts: []
+commands_run: []
+test_evidence:
+  passed: []
+  failed: []
+  not_run: []
+provenance:
+  authorship:
+    ai_generated_estimate: high
+    human_modified_estimate: low
+    method: post-hoc-transcript
+  agent_touched_files:
+  - /tmp/redirect.ts
+  human_touched_files: []
 summary:
-  framing: per-diff
   claims:
-    - id: CLAIM-001
-      stable_id: 0123456789abcdef
-      text: updates redirect_uri allowlist
-      claim_kind: behavior
-      diff_refs: []
-      evidence_refs: ['DIFF-001']
-      confidence: supported
-      risk_level_agent: med
-      risk_rationale_agent: scope unchanged; lint ok
-posted_to_pr: []
+  - id: CLAIM-001
+    stable_id: 0123456789abcdef
+    text: updates redirect_uri allowlist
+    evidence_refs:
+    - DIFF-001
+    confidence: supported
+    synthesis_mode: mechanical
+    risk_classification:
+      agent: { level: med, rationale: scope unchanged }
+      creator_override: { level: null, reason: null, at: null, by: null }
+      reviewer_override: { level: null, reason: null, at: null, by: null }
+  ungrounded_claim_count: 0
 approval_trail: []
 `;
 
@@ -201,7 +242,14 @@ test.describe('Sprint 4 — decisions + modals + J12 (gh#11)', () => {
       (i) => (i as { cmd: string }).cmd === 'save_decision',
     ) as { cmd: string; args: Record<string, unknown> } | undefined;
     expect(saveDecision, 'a key must dispatch save_decision').toBeDefined();
-    expect(saveDecision!.args.packet_id).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV');
-    expect(saveDecision!.args.decision).toBe('accept');
+    // v0.1.1 IPC wrapper-args contract: the IPC client wraps the args
+    // as `{ args: parsed.data }` (see apps/ui/src/ipc/client.ts:130). The
+    // mock captures the outer payload verbatim, so the inner fields are
+    // at `args.args.*`. The previous direct-field assertion predated the
+    // wrapper-args fix (v0.1.1 P0) and only worked under the flat shape
+    // the resolver no longer accepts.
+    const inner = (saveDecision!.args as { args: Record<string, unknown> }).args;
+    expect(inner.packet_id).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    expect(inner.decision).toBe('accept');
   });
 });
