@@ -6,6 +6,44 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security — gh#9: single source of truth for bundled redaction patterns YAML
+
+Closes synaptiai/trail#9. Closes v0.1.1 security audit P3-6 (CWD-trust on
+patterns load). Three pieces:
+
+(a) **Tauri shell now embeds the patterns YAML at compile time**
+(`apps/ui/src-tauri/src/main.rs`). Previously `load_layer2_patterns()`
+walked CWD ancestors looking for `bin/trail-redaction-patterns.yml` —
+any directory the user `cd`'d to before launching the desktop binary
+could host a hostile patterns file (v0.1.1 P3-6). The mitigation in
+v0.1.1 (`yaml_safety::guard()` at parse) limited blast radius but did
+not close the substitution itself. The new code uses
+`include_str!("../../../../bin/trail-redaction-patterns.yml")` — the
+canonical YAML is sealed to the binary at build time. `yaml_safety::guard()`
+still runs on the embedded YAML as cheap defense-in-depth against future
+catalog edits that violate the size cap. Refactored
+`parse_patterns_file(&Path)` → `parse_patterns_str(&str)` as the single
+parser entry point. Two new structural tests in `mod layer2_embed_tests`
+pin the `include_str!` use and forbid `current_dir(` / `.pop()`.
+
+(b) **Package-side bundled YAML copies are now gitignored**. The two
+copies at `apps/capture/bin/*.yml` have been build artifacts in practice
+since `copy-bin.mjs` landed (F19/2026-05-09) — the README warned not to
+edit them since then. They were still committed, which contradicted the
+"exactly one source location" intent. Added `apps/capture/bin/*.yml` to
+the root `.gitignore`; the `prebuild`/`pretest` hooks regenerate them
+from canonical. Added a `git ls-files` gate test that reddens if either
+copy gets recommitted.
+
+(c) **New AC#3 verification test** — pins the three properties that keep
+the post-install YAML load deterministic for the npm-published capture
+binary: `package.json` `files` includes `"bin"`; the YAML exists at
+`<package-root>/bin/trail-redaction-patterns.yml` post-pretest; the
+runtime resolver `defaultBundledPatternsPath()` returns that exact path.
+
+Apps/capture suite: 342 pass / 2 skip / 0 fail (was 340/2/0; +2 gh#9
+tests). apps/ui/src-tauri suite: 379 pass (was 377; +2 gh#9 tests).
+
 ### Testing — gh#5: frozen redacted transcript fixture for offline parity testing
 
 Closes synaptiai/trail#5. Pre-#5, the three parity suites

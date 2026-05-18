@@ -264,6 +264,135 @@ mod ipc_handler_pin_tests {
     }
 }
 
+// [gh#9 / 2026-05-18] Layer 2 patterns compile-time embed.
+//
+// Closes v0.1.1 security audit P3-6 (CWD-trust on patterns load). The
+// previous implementation walked CWD ancestors looking for
+// `bin/trail-redaction-patterns.yml` — any directory the user `cd`s to
+// before launching the desktop binary could host a hostile YAML that
+// would be loaded in place of the bundled one. The mitigation in v0.1.1
+// (`yaml_safety::guard()` at parse) limited the blast radius but did
+// not close the substitution itself.
+//
+// This test pair pins two properties of `load_layer2_patterns()`:
+//
+//   1. `parse_patterns_str(&str)` (the new pure-parser entry point used
+//      by the include_str! path) successfully parses the canonical
+//      bundled YAML and returns a non-empty pattern set including known
+//      names.
+//   2. The body of `fn load_layer2_patterns` contains `include_str!`
+//      and contains no CWD-walking constructs (`current_dir(` /
+//      `.pop()`). This is a structural guard against re-introducing the
+//      P3-6 attack surface. The IPC handler pin test
+//      (`ipc_handler_registration_pinned`, above) uses the same
+//      source-read pattern.
+#[cfg(test)]
+mod layer2_embed_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn parse_patterns_str_parses_bundled_yaml() {
+        let yaml = include_str!("../../../../bin/trail-redaction-patterns.yml");
+        let result = parse_patterns_str(yaml);
+        assert!(result.is_ok(), "parse_patterns_str failed: {:?}", result);
+        let patterns = result.unwrap();
+        assert!(!patterns.is_empty(), "expected non-empty pattern set");
+        let names: Vec<&str> = patterns.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"aws-access-key"),
+            "missing aws-access-key in bundled set: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"home-path"),
+            "missing home-path in bundled set: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn load_layer2_patterns_uses_compile_time_embed_only() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs");
+        let src = fs::read_to_string(path).expect("read main.rs via CARGO_MANIFEST_DIR anchor");
+        // The test mod is above the function definition AND mentions
+        // the function name in literals (error messages, this marker
+        // string itself). `rfind` pins to the last occurrence — the
+        // actual definition — regardless of how many literal mentions
+        // appear in the source above it.
+        let fn_marker = "fn load_layer2_patterns() -> Result";
+        let fn_start = src.rfind(fn_marker).expect("load_layer2_patterns must exist");
+        // Find the opening brace of the function body.
+        let body_open_rel = src[fn_start..]
+            .find('{')
+            .expect("load_layer2_patterns must have a body");
+        let body_open = fn_start + body_open_rel;
+        // Walk forward, counting brace depth, to find the matching close.
+        let mut depth = 0i32;
+        let mut body_close = body_open;
+        for (i, ch) in src[body_open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_close = body_open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &src[body_open..body_close];
+        // Cycle-1 F2 (P2): the brace counter is byte-naive — it counts
+        // every `{`/`}` including those inside string literals, char
+        // literals, format strings, and `r#"..."#` raw strings. If a
+        // future edit adds e.g. `tracing::warn!("x {y}", y = …)` inside
+        // the function body, the counter would prematurely terminate
+        // and the forbidden-construct asserts below would scan a
+        // truncated body — silently passing while the real body
+        // contains the construct. Mitigation: assert the extracted
+        // body contains the function's only outbound call
+        // (`parse_patterns_str(`) and is at least ~200 chars (the
+        // include_str! line + comments + the parse call). Either gate
+        // failing means the brace walker landed in the wrong place,
+        // and the test fails-fast with a clear message rather than a
+        // misleading PASS.
+        assert!(
+            body.contains("parse_patterns_str("),
+            "extracted body did not contain expected outbound call \
+             `parse_patterns_str(`; brace counter likely walked past \
+             the function close. Body length: {}. Body:\n{}",
+            body.len(),
+            body
+        );
+        assert!(
+            body.len() > 200,
+            "extracted body unreasonably short ({} chars) — brace counter \
+             likely terminated early. Body:\n{}",
+            body.len(),
+            body
+        );
+        // Required: compile-time embed.
+        assert!(
+            body.contains("include_str!"),
+            "load_layer2_patterns must embed the bundled YAML via include_str! (gh#9 AC#2). Body:\n{}",
+            body
+        );
+        // Forbidden: CWD-walking constructs (v0.1.1 P3-6).
+        assert!(
+            !body.contains("current_dir("),
+            "load_layer2_patterns must NOT call std::env::current_dir() (v0.1.1 P3-6). Body:\n{}",
+            body
+        );
+        assert!(
+            !body.contains(".pop()"),
+            "load_layer2_patterns must NOT walk path ancestors via .pop() (v0.1.1 P3-6). Body:\n{}",
+            body
+        );
+    }
+}
+
 /// Construct a closure that rebuilds libSQL state for one packet from its
 /// on-disk YAML (B5 §3.3 contract). Used by the boot-time recovery scan;
 /// the closure captures the connection by mutable reference because
@@ -335,20 +464,22 @@ fn build_recovery_rebuild_closure(
 }
 
 fn load_layer2_patterns() -> Result<Vec<(String, regex::Regex)>, String> {
-    // Search for the bundled patterns file walking up from cwd. Keeps
-    // this v0.1 simple — a packaged binary would embed the patterns at
-    // build-time (e.g. via `include_str!`); this is acceptable for the
-    // Sprint 4 development surface.
-    let mut here = std::env::current_dir().map_err(|e| e.to_string())?;
-    loop {
-        let candidate = here.join("bin").join("trail-redaction-patterns.yml");
-        if candidate.exists() {
-            return parse_patterns_file(&candidate);
-        }
-        if !here.pop() {
-            return Err("trail-redaction-patterns.yml not found".into());
-        }
-    }
+    // gh#9 / 2026-05-18 (closes v0.1.1 security audit P3-6): the bundled
+    // patterns YAML is embedded at compile time via `include_str!` and
+    // parsed at boot. The previous implementation walked CWD ancestors
+    // for `bin/trail-redaction-patterns.yml`, which let any directory
+    // the user `cd`s to before launching the desktop binary substitute
+    // a hostile patterns file (partially mitigated by `yaml_safety::guard()`
+    // at parse, but the substitution itself was the deeper issue).
+    //
+    // The path resolves relative to this source file (4 levels up to
+    // repo root, then into `bin/`); cargo recompiles automatically when
+    // the embedded file changes. `yaml_safety::guard()` still runs on
+    // the embedded YAML — even though it's trusted at build time, the
+    // anchor-bomb / size check is cheap and preserves the gate against
+    // future YAML changes that might violate the cap.
+    let embedded = include_str!("../../../../bin/trail-redaction-patterns.yml");
+    parse_patterns_str(embedded)
 }
 
 /// Walk ancestors of cwd to find a `.trail/sessions/` directory. v0.1
@@ -369,19 +500,24 @@ fn resolve_trail_sessions_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-fn parse_patterns_file(path: &std::path::Path) -> Result<Vec<(String, regex::Regex)>, String> {
-    let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    // v0.1.1 B7: the patterns file is located via CWD-ancestor walk
-    // (security audit P3-6 — any directory the user `cd`s to before
-    // launching can host a hostile bin/trail-redaction-patterns.yml).
-    // Gate against anchor-bomb / oversize before the unbounded parse.
-    yaml_safety::guard(&raw)
+// gh#9 / 2026-05-18: pure parser over a YAML string body. The only
+// caller is `load_layer2_patterns()`, which now passes the compile-time
+// embedded canonical YAML (closes v0.1.1 P3-6). The previous
+// `parse_patterns_file(path)` was removed along with its filesystem
+// read — no other caller existed.
+//
+// `yaml_safety::guard()` is retained even though the input is trusted
+// at build time: the anchor-bomb / size check is cheap and preserves
+// the gate against future YAML changes that might violate the cap.
+fn parse_patterns_str(raw: &str) -> Result<Vec<(String, regex::Regex)>, String> {
+    yaml_safety::guard(raw)
         .map_err(|e| format!("patterns file rejected by yaml_safety: {e:?}"))?;
-    let v: serde_yaml::Value = serde_yaml::from_str(&raw).map_err(|e| e.to_string())?;
+    let v: serde_yaml::Value = serde_yaml::from_str(raw).map_err(|e| e.to_string())?;
     let arr = v
         .get("patterns")
         .and_then(|p| p.as_sequence())
         .ok_or_else(|| "patterns: not a sequence".to_string())?;
+    let arr_len = arr.len();
     let mut out = Vec::new();
     for entry in arr {
         let name = entry
@@ -410,6 +546,21 @@ fn parse_patterns_file(path: &std::path::Path) -> Result<Vec<(String, regex::Reg
                 "skipping pattern that did not compile"
             ),
         }
+    }
+    // gh#9 cycle-2 ERR-1: if every catalog entry failed to compile, the
+    // strict-redaction gate would silently run with an empty pattern set
+    // — saga's Layer 2 scan would never catch anything, and the caller's
+    // `unwrap_or_else(|| empty_set)` wouldn't fire because we'd return
+    // Ok(empty). Surface this as Err so the boot-time fallback log is
+    // taken intentionally. The single-pattern-failure case (`out.len() <
+    // arr_len` but `out.len() > 0`) remains silent-skip — those failures
+    // are tolerated by design (e.g., a JS-only inline-flag pattern in a
+    // user-supplied YAML).
+    if out.is_empty() && arr_len > 0 {
+        return Err(format!(
+            "all {} pattern entries failed to compile; refusing to ship empty Layer 2 set",
+            arr_len
+        ));
     }
     Ok(out)
 }
