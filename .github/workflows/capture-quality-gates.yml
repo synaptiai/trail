@@ -70,12 +70,16 @@ jobs:
 
       - name: Vitest (unit tests + parity tests)
         # parity-mechanical / parity-md / parity-perdiff suites compare TS
-        # port output against py-reference for the canonical session
-        # transcript. They run automatically when the transcript + py3 are
-        # available; CI's setup-node doesn't include py3 with the
-        # py-reference deps, so those particular tests `describe.runIf`
-        # themselves to skip cleanly. The vitest gate still asserts the
-        # rest of the suite.
+        # port output against py-reference for the committed redacted
+        # fixture at apps/capture/test/fixtures/<sid>.redacted.jsonl
+        # (synaptiai/trail#5). Pre-#5 they self-skipped on missing live
+        # transcript; post-#5 they self-skip ONLY when py-reference itself
+        # is unavailable (the public mirror does not include py-reference).
+        # CI's setup-node doesn't install py3 or pyyaml, so those tests
+        # still skip cleanly here. The vitest gate still asserts the rest
+        # of the suite. To run parity gates locally:
+        #   pnpm --filter @synapti/trail-capture run build && \
+        #     ./apps/capture/node_modules/.bin/vitest --root apps/capture run
         run: pnpm --filter @synapti/trail-capture run test
 
       - name: Build (tsc + copy-bin)

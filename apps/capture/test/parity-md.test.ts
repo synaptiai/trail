@@ -2,6 +2,12 @@
 // We test our render against a packet parsed from py-reference's YAML output,
 // and compare the markdown structure (headings, anchor IDs, fence counts) and
 // a small sub-fixture for byte parity.
+//
+// Pre-#5 this test invoked py-reference with no transcript safety net — when
+// the live ~/.claude/projects/... transcript was absent (every CI run + every
+// fresh contributor checkout), py-reference threw FileNotFoundError and
+// beforeAll failed. The committed redacted fixture (synaptiai/trail#5)
+// removes that failure mode.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -19,12 +25,14 @@ import type { Packet } from "../src/packet/types.js";
 // against py-reference output. See packet/yaml.ts for the schema fix.
 import { loadYaml } from "../src/packet/yaml.js";
 import { renderMarkdown } from "../src/render/markdown.js";
+import { stageParityFixture } from "./helpers/parity-fixture.js";
 
 const SESSION_ID = "18e374b5-4eb9-424d-a3ff-a639d1c6fada";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKTREE_ROOT = join(__dirname, "..", "..", "..");
 const PY_REFERENCE_TRAIL = join(WORKTREE_ROOT, "py-reference", "cli", "trail.py");
 
+const staging = stageParityFixture(SESSION_ID);
 const pyReferenceAvailable = existsSync(PY_REFERENCE_TRAIL);
 const pythonAvailable = (() => {
   try {
@@ -35,7 +43,7 @@ const pythonAvailable = (() => {
   }
 })();
 
-describe.runIf(pyReferenceAvailable && pythonAvailable)(
+describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
   "markdown render parity vs py-reference (criterion 4 / spec §10)",
   () => {
     let pyMd: string;
@@ -50,7 +58,11 @@ describe.runIf(pyReferenceAvailable && pythonAvailable)(
       const r = spawnSync(
         "python3",
         [PY_REFERENCE_TRAIL, "packet", "generate", SESSION_ID, "--no-llm", "--out", pyOut],
-        { encoding: "utf-8", timeout: 120_000 }
+        {
+          encoding: "utf-8",
+          timeout: 120_000,
+          env: { ...process.env, TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy },
+        }
       );
       if (r.status !== 0) {
         throw new Error(`py-reference exited ${r.status}: ${r.stderr}`);
