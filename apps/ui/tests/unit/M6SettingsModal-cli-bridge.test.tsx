@@ -93,7 +93,7 @@ const fixture: Settings = {
   density: 'comfortable',
   disable_tamper_warnings: false,
   heavy_redaction_threshold: 15,
-  capture_cli_path: '@synapti/trail-capture',
+  capture_cli_path: 'trail',
   pinned_sessions: [],
 };
 
@@ -140,7 +140,7 @@ describe('M6 Settings → Capture × cli_bridge IPC (gh#11 AC-11)', () => {
 
     const { onSettingsSaved } = await openCapturePanel();
 
-    const input = screen.getByPlaceholderText('@synapti/trail-capture') as HTMLInputElement;
+    const input = screen.getByPlaceholderText('trail') as HTMLInputElement;
     await act(async () => {
       fireEvent.change(input, { target: { value: '/usr/local/bin/trail' } });
     });
@@ -194,7 +194,7 @@ describe('M6 Settings → Capture × cli_bridge IPC (gh#11 AC-11)', () => {
 
     await openCapturePanel();
 
-    const input = screen.getByPlaceholderText('@synapti/trail-capture') as HTMLInputElement;
+    const input = screen.getByPlaceholderText('trail') as HTMLInputElement;
     await act(async () => {
       fireEvent.change(input, { target: { value: '/missing/binary' } });
     });
@@ -221,7 +221,7 @@ describe('M6 Settings → Capture × cli_bridge IPC (gh#11 AC-11)', () => {
 
     await openCapturePanel();
 
-    const input = screen.getByPlaceholderText('@synapti/trail-capture') as HTMLInputElement;
+    const input = screen.getByPlaceholderText('trail') as HTMLInputElement;
     await act(async () => {
       fireEvent.change(input, { target: { value: '/some/path' } });
     });
@@ -250,7 +250,7 @@ describe('M6 Settings → Capture × cli_bridge IPC (gh#11 AC-11)', () => {
 
     await openCapturePanel();
 
-    const input = screen.getByPlaceholderText('@synapti/trail-capture') as HTMLInputElement;
+    const input = screen.getByPlaceholderText('trail') as HTMLInputElement;
     await act(async () => {
       fireEvent.change(input, { target: { value: '/build/pipeline/path' } });
     });

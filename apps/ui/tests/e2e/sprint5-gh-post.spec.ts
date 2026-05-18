@@ -93,7 +93,7 @@ async function installIpcMock(page: Page): Promise<void> {
         density: 'comfortable',
         disable_tamper_warnings: false,
         heavy_redaction_threshold: 15,
-        capture_cli_path: '@synapti/trail-capture',
+        capture_cli_path: 'trail',
         pinned_sessions: [],
       }),
       write_settings: () => ({ ok: true }),

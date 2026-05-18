@@ -1,6 +1,7 @@
 // Top-level pipeline orchestrator. Implements spec §3 default behavior steps 2–11.
 
-import { existsSync } from "node:fs";
+import type { Dirent } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { type LlmRunner, synthesizeLlm } from "./claims/llm.js";
@@ -75,6 +76,45 @@ function stderr(opts: GenerateOptions, message: string, bypassQuiet = false): vo
   process.stderr.write(`${message}\n`);
 }
 
+/**
+ * v0.1.3 bug-3: when `trail packet generate` is run from a directory
+ * that is not itself a git repo but *contains* git repos in immediate
+ * subdirectories, the bare error message wastes the user's time.
+ * Scan one level deep, return absolute paths of any subdirectory that
+ * has a `.git/` entry (file or dir — supports submodule + worktree
+ * setups). Cap at 10 to bound output for users with many clones.
+ *
+ * Failures (`EACCES` on a parent we can't read, broken symlinks, etc.)
+ * are swallowed — this is best-effort UX, not a security boundary.
+ */
+export function findGitSubdirectories(parent: string): string[] {
+  const matches: string[] = [];
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(parent, { withFileTypes: true, encoding: "utf8" });
+  } catch {
+    return matches;
+  }
+  for (const entry of entries) {
+    if (matches.length >= 10) break;
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue;
+    const candidate = join(parent, entry.name);
+    const gitMarker = join(candidate, ".git");
+    try {
+      if (existsSync(gitMarker)) {
+        const s = statSync(gitMarker);
+        if (s.isDirectory() || s.isFile()) {
+          matches.push(candidate);
+        }
+      }
+    } catch {
+      // ignore permission errors on a single child
+    }
+  }
+  return matches.sort();
+}
+
 export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
   const notices: string[] = [];
   const warnings: string[] = [];
@@ -87,6 +127,15 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
   } catch (err) {
     if (err instanceof GitNotARepoError) {
       stderr(opts, `not a git repository: ${err.path}`, true);
+      // v0.1.3 bug-3: when the user runs `trail packet generate --latest`
+      // from a *parent* directory that happens to contain git repos
+      // (e.g. ~/code/ holds many cloned projects), the bare error is a
+      // dead end. Scan one level down and suggest concrete `cd` targets.
+      const candidates = findGitSubdirectories(err.path);
+      if (candidates.length > 0) {
+        const list = candidates.map((c) => `  - ${c}`).join("\n");
+        stderr(opts, `did you mean to cd into one of these?\n${list}`, true);
+      }
       return { exitCode: 3, validationErrors, notices, warnings };
     }
     stderr(opts, `git state corrupt: ${(err as Error).message}`, true);

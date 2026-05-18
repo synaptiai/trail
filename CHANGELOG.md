@@ -4,6 +4,139 @@ All notable changes to Trail are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-05-18
+
+Emergency bugfix release. v0.1.2 shipped to npm + draft GitHub Release
+but did NOT work for users — Daniel installed the .dmg and the CLI and
+hit three independent ship-blockers within minutes. v0.1.2's GitHub
+Release was kept in draft and v0.1.3 supersedes it; v0.1.2's npm
+artifact is auto-deprecated by the release-pipeline logic that shipped
+in v0.1.2 itself.
+
+A fourth bug was caught by **dogfooding the v0.1.3 CLI in the trail
+monorepo itself** before tagging — the kind of bug log-only smoke
+cannot see and that the v0.1.2 release would also have shipped.
+
+### Fixed — desktop sidebar bricked on first paint (ship-blocker)
+
+- **`query_trail` response shape** — `apps/ui/src-tauri/src/ipc.rs`
+  `QueryTrailResponse::next_cursor` was `Option<String>` without
+  `#[serde(skip_serializing_if = "Option::is_none")]`. serde serialised
+  `None` as JSON `null`. The Zod schema in
+  `apps/ui/src/ipc/contract.ts::queryTrailResponseSchema` used plain
+  `.optional()` — which accepts `undefined` / missing key but NOT
+  `null`. Result: every install red-bannered the sidebar with
+  `Trail database unavailable — Expected string, received null at next_cursor`
+  the moment the empty-DB query returned. Class of bug = same wire-
+  contract mismatch as v0.1.0's IPC wrapper-args; the v0.1.1 B2 IPC
+  dispatch smoke only covered REQUEST shape, not RESPONSE shape.
+- **Audit of every `Option<T>` response field** — `PostToPrResponse`
+  (`pr_url`, `destination`, `body_hash_prefix`), `DecideOnPrResponse`
+  (`pr_url`), `QueryTrailResponse` (`next_cursor`), and
+  `PreviewRedactedResponse` (`original`) all now carry
+  `skip_serializing_if = "Option::is_none"`. Zod schemas were also
+  hardened to `.nullable().optional()` as belt-and-braces so a future
+  regression in either layer can't re-brick the renderer.
+- **New regression canary** in
+  `apps/ui/src-tauri/tests/ipc_dispatch_smoke.rs`:
+  `query_trail_response_omits_next_cursor_when_none`. Round-trips the
+  wire JSON through the real Tauri serde resolver and fails on either
+  a present `"next_cursor": null` OR an unexpected key. The response-
+  side analogue of v0.1.1's existing flat-envelope canary.
+
+### Fixed — Settings → Capture probe ENOENT'd on every fresh install (ship-blocker)
+
+- **`capture_cli_path` default was wrong identifier**. v0.1.0–v0.1.2
+  defaulted to `@synapti/trail-capture` — the **npm package name**. But
+  the package's `bin` field installs the binary as `trail`
+  (`apps/capture/package.json`). After `npm install -g`, spawning the
+  default value verbatim hit `ENOENT`. The Settings → Capture Verify
+  probe surfaced this as
+  `✗ probe failed (spawn): spawn failed: @synapti/trail-capture: No such file or directory`
+  on every install.
+- **New canonical default**: `apps/ui/src-tauri/src/settings.rs`
+  declares `pub const DEFAULT_CAPTURE_CLI_PATH: &str = "trail"`. Used
+  by `Settings::default()` and (via re-export) by the watcher fallback
+  in `read_cli_path_and_user`. Matching default in
+  `contract.ts::settingsSchema.capture_cli_path`.
+- **One-time migration** in `read_settings`: any persisted
+  `capture_cli_path == "@synapti/trail-capture"` is silently rewritten
+  to `"trail"` on next load. User-typed values are preserved (only
+  values from the known-legacy default list migrate). Covers the
+  v0.1.0–v0.1.2 users whose `~/.trail/settings.json` got the wrong
+  default baked in.
+- **UI copy** in `M6SettingsModal.tsx`: helper text now reads
+  `Default: trail (installed by npm install -g @synapti/trail-capture)`;
+  placeholder = `trail`. Test fixtures across unit / e2e / perf suites
+  updated to the new default.
+
+### Fixed — CLI `trail packet generate --latest` (UX + bug-4 hard fail)
+
+- **`not a git repository` error now suggests subdirectories**
+  (`apps/capture/src/generate.ts`). When the user runs from a parent
+  directory containing git repos in immediate subdirectories (e.g.
+  `/Users/foo/code/` holds many clones), the bare error wasted the
+  user's time. New `findGitSubdirectories` helper scans one level
+  deep, detects both `.git` directories AND `.git` files (worktree /
+  submodule), caps results at 10, suggests concrete `cd` targets.
+- **`findLatestSessionId` walks cwd ancestors** (`apps/capture/src/cli.ts`).
+  v0.1.0–v0.1.2 only sanitised the exact cwd and looked up
+  `~/.claude/projects/<sanitized>` once, returning null if that
+  directory didn't exist. But Claude Code identifies the project root
+  from where the user launched `claude` — typically the WORKSPACE
+  root, often a parent of where the user later runs `trail`. v0.1.3
+  walks UP the cwd hierarchy, picks the closest ancestor whose
+  sanitized form has `.jsonl` files, terminates cleanly at filesystem
+  root. **This bug was caught by dogfooding** — `trail packet generate
+  --latest` run from `trail-internal/` (the git repo, to satisfy the
+  bug-3 git check) couldn't find the session captured by Claude Code
+  at `/Users/danielbentes/trail` (the workspace root). Bugs 3 + 4 are
+  a paired trap: the v0.1.2 fix for one would have hidden the other.
+
+### Verification methodology
+
+- New memory file (private, agent-side):
+  `feedback_verification_layer_match.md`. Encodes the rule that
+  log-only smoke is structurally incapable of seeing renderer-side
+  failures. Before any Tier-3 ship action: real UI verification
+  (screenshots OR automated UI-driver), not just `tail -f` on the
+  binary's stderr. v0.1.3 is the first cycle to follow this rule.
+- v0.1.3 verification: Daniel installed the locally-built .dmg,
+  screenshot-confirmed (a) sidebar opens with no red banner and (b)
+  Settings → Capture → Verify now spawn-fails on `trail` (the
+  expected failure mode when the npm package isn't globally installed
+  on the test machine) rather than on `@synapti/trail-capture` (the
+  bug-2 regression). Bugs 3 + 4 dogfooded by running the CLI in this
+  repo and producing `.trail/sessions/.../packet-3.yml` from this
+  very ship cycle.
+- Next-cycle verification investment: **tauri-driver / WebDriverIO**
+  ([gh#2](https://github.com/synaptiai/trail/issues/2)) — the durable
+  answer to the screenshot round-trip overhead.
+
+### Test surface delta
+
+- @trail/ui: 508 passed (unchanged).
+- @synapti/trail-capture: **340 passed | 2 skipped** (was 330 | 2;
+  +6 `findGitSubdirectories` tests, +4 ancestor-walk tests in
+  `cli-helpers.test.ts`).
+- Rust unit + integration: **371 passed** across 3 suites (was 367;
+  +3 settings migration tests in `settings.rs::tests`, +1 round-trip
+  canary in `ipc_dispatch_smoke.rs`).
+- typecheck + biome (capture) + ESLint changed-files (ui) — clean.
+
+### Known issues / not fixed in v0.1.3
+
+- macOS code-signing + notarisation
+  ([gh#7](https://github.com/synaptiai/trail/issues/7)). v0.1.3 .dmg
+  remains unsigned; `xattr -dr com.apple.quarantine /Applications/Trail.app`
+  is still required on first launch. Apple Dev Program enrolment
+  blocks this; deferred to v0.2.
+- Production-runtime UI driver
+  ([gh#2](https://github.com/synaptiai/trail/issues/2)). v0.1.3
+  shipped on visual screenshot verification + CLI dogfood; the next
+  cycle's first priority is wiring tauri-driver / WebDriverIO so
+  pre-tag smoke can be automated.
+
 ## [0.1.2] — 2026-05-17
 
 Quality polish on top of v0.1.1. Closes the four small items from the

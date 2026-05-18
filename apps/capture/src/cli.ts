@@ -2,7 +2,7 @@
 // Trail CLI entry. Spec §3 commands + flags.
 
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { spawnClaudeRunner } from "./claims/llm.js";
@@ -264,22 +264,47 @@ export function findLatestSessionId(cwd: string): string | null {
   // naming (which always derives from an absolute path). On Windows, the
   // sanitization rule differs from POSIX in any case; this v0.1 helper only
   // supports POSIX and silently returns null on a relative input.
+  //
+  // [v0.1.3 bug-4] Walk UP the cwd hierarchy. Claude Code identifies the
+  // project root from where the user launched `claude`, which is often a
+  // PARENT of where the user later runs `trail`. Daniel's repro is the
+  // canonical case: Claude Code session at /Users/danielbentes/trail
+  // (the workspace root), `trail packet generate --latest` invoked from
+  // /Users/danielbentes/trail/trail-internal (the git repo to satisfy
+  // bug-3's git-state check). v0.1.0–v0.1.2 only checked the exact cwd,
+  // so this combination silently said "no sessions for this cwd" even
+  // though the transcript lived in ~/.claude/projects/-Users-danielbentes-trail.
+  // Walk up to the filesystem root, stop at the first ancestor whose
+  // sanitized form has a project directory.
   try {
     if (!isAbsolute(cwd)) return null;
     const homeDir = process.env.HOME ?? "";
-    const sanitized = cwd.replace(/\//g, "-");
-    const root = join(homeDir, ".claude", "projects", sanitized);
-    if (!existsSync(root)) return null;
-    let latest: { name: string; mtime: number } | null = null;
-    for (const entry of readdirSync(root)) {
-      if (!entry.endsWith(".jsonl")) continue;
-      const stat = statSync(join(root, entry));
-      const t = stat.mtimeMs;
-      if (!latest || t > latest.mtime) {
-        latest = { name: entry.replace(/\.jsonl$/, ""), mtime: t };
+    const projectsRoot = join(homeDir, ".claude", "projects");
+    if (!existsSync(projectsRoot)) return null;
+    let current = cwd;
+    while (true) {
+      const sanitized = current.replace(/\//g, "-");
+      const root = join(projectsRoot, sanitized);
+      if (existsSync(root)) {
+        let latest: { name: string; mtime: number } | null = null;
+        for (const entry of readdirSync(root)) {
+          if (!entry.endsWith(".jsonl")) continue;
+          const stat = statSync(join(root, entry));
+          const t = stat.mtimeMs;
+          if (!latest || t > latest.mtime) {
+            latest = { name: entry.replace(/\.jsonl$/, ""), mtime: t };
+          }
+        }
+        if (latest) return latest.name;
+        // Directory exists but is empty — keep walking up; a higher
+        // ancestor's project dir may have the session even if a closer
+        // one was created empty by some other tool.
       }
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
     }
-    return latest?.name ?? null;
+    return null;
   } catch {
     return null;
   }

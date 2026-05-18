@@ -374,7 +374,9 @@ describe('IPC contract', () => {
       expect(r.density).toBe('comfortable');
       expect(r.disable_tamper_warnings).toBe(false);
       expect(r.heavy_redaction_threshold).toBe(15);
-      expect(r.capture_cli_path).toBe('@synapti/trail-capture');
+      // v0.1.3 bug-2: default is the BINARY name `trail`, not the npm
+      // package name (the package's `bin` field installs `trail`).
+      expect(r.capture_cli_path).toBe('trail');
     });
 
     it('rejects unknown theme values', () => {

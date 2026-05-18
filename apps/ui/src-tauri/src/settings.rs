@@ -60,7 +60,7 @@ impl Default for Settings {
             density: "comfortable".into(),
             disable_tamper_warnings: false,
             heavy_redaction_threshold: 15,
-            capture_cli_path: "@synapti/trail-capture".into(),
+            capture_cli_path: DEFAULT_CAPTURE_CLI_PATH.into(),
             pinned_sessions: Vec::new(),
             hmac: None,
         }
@@ -69,6 +69,22 @@ impl Default for Settings {
 
 /// LRU cap (gh#8 criterion 2: "max 5 entries").
 pub const MAX_PINNED_SESSIONS: usize = 5;
+
+/// Default value for [`Settings::capture_cli_path`]. This is the BINARY
+/// name installed by `npm install -g @synapti/trail-capture` (see the
+/// package's `bin` field). v0.1.3 fix: v0.1.0–v0.1.2 wrote the npm
+/// package name here instead, which `spawn()` then tried to exec
+/// literally and failed with ENOENT. The Settings → Capture probe was
+/// the most-visible victim of that bug.
+pub const DEFAULT_CAPTURE_CLI_PATH: &str = "trail";
+
+/// Legacy `capture_cli_path` values that v0.1.0–v0.1.2 may have written
+/// into a user's `~/.trail/settings.json`. `read_settings` rewrites
+/// these forward to [`DEFAULT_CAPTURE_CLI_PATH`] on load so an
+/// in-place upgrade fixes itself without the user editing the file.
+/// Only auto-migrate values we KNOW were defaults — anything the user
+/// typed by hand stays untouched.
+const LEGACY_CAPTURE_CLI_PATHS: &[&str] = &["@synapti/trail-capture"];
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -155,8 +171,23 @@ pub fn read_settings(path: &Path) -> Result<Settings, SettingsError> {
     if bytes.is_empty() {
         return Ok(Settings::default());
     }
-    let s: Settings = serde_json::from_slice(&bytes)?;
+    let mut s: Settings = serde_json::from_slice(&bytes)?;
+    migrate_capture_cli_path(&mut s);
     Ok(s)
+}
+
+/// v0.1.3 bug-2 migration: rewrite any known-legacy `capture_cli_path`
+/// value forward to [`DEFAULT_CAPTURE_CLI_PATH`]. Triggered every time
+/// settings are read from disk so a v0.1.0–v0.1.2 user who upgrades
+/// gets the fix without editing the file. User-typed values that don't
+/// match an entry in [`LEGACY_CAPTURE_CLI_PATHS`] are left untouched.
+fn migrate_capture_cli_path(settings: &mut Settings) {
+    if LEGACY_CAPTURE_CLI_PATHS
+        .iter()
+        .any(|legacy| settings.capture_cli_path == *legacy)
+    {
+        settings.capture_cli_path = DEFAULT_CAPTURE_CLI_PATH.into();
+    }
 }
 
 /// Write settings via the atomic tmp-rename protocol (B5 §3.1).
@@ -238,6 +269,51 @@ mod tests {
         assert_eq!(s.density, "comfortable");
         assert_eq!(s.heavy_redaction_threshold, 15);
         assert!(s.pinned_sessions.is_empty());
+        // v0.1.3 bug-2: default must be the BINARY name, not the npm
+        // package name (`@synapti/trail-capture` would fail spawn()).
+        assert_eq!(s.capture_cli_path, "trail");
+    }
+
+    #[test]
+    fn read_settings_migrates_legacy_npm_package_name_to_binary() {
+        // v0.1.3 bug-2 migration: users who booted v0.1.0–v0.1.2 had the
+        // wrong default ('@synapti/trail-capture') persisted to their
+        // settings.json. Loading their file must transparently rewrite
+        // it forward to the binary name so the Settings → Capture probe
+        // and the watcher don't continue to spawn an unknown binary.
+        let path = tmp_path();
+        let raw = serde_json::json!({
+            "theme": "system",
+            "density": "comfortable",
+            "disable_tamper_warnings": false,
+            "heavy_redaction_threshold": 15,
+            "capture_cli_path": "@synapti/trail-capture",
+            "pinned_sessions": [],
+        });
+        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let s = read_settings(&path).unwrap();
+        assert_eq!(s.capture_cli_path, DEFAULT_CAPTURE_CLI_PATH);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_settings_preserves_user_typed_capture_cli_path() {
+        // The migration must NOT touch values the user typed by hand —
+        // someone running a forked CLI from `/opt/local/bin/my-trail`
+        // gets to keep it.
+        let path = tmp_path();
+        let raw = serde_json::json!({
+            "theme": "system",
+            "density": "comfortable",
+            "disable_tamper_warnings": false,
+            "heavy_redaction_threshold": 15,
+            "capture_cli_path": "/opt/local/bin/my-trail",
+            "pinned_sessions": [],
+        });
+        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let s = read_settings(&path).unwrap();
+        assert_eq!(s.capture_cli_path, "/opt/local/bin/my-trail");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

@@ -127,8 +127,14 @@ export const settingsSchema = z.object({
   disable_tamper_warnings: z.boolean().default(false),
   /** Heavy-redaction threshold for E5. Default 15 per B3 OQ-B3-6. */
   heavy_redaction_threshold: z.number().int().min(1).max(500).default(15),
-  /** Path to the capture CLI binary. Defaults to `@synapti/trail-capture`. */
-  capture_cli_path: z.string().default('@synapti/trail-capture'),
+  /**
+   * Path to the capture CLI binary. Default is `trail` — the binary name
+   * installed by `npm install -g @synapti/trail-capture` (per the package's
+   * `bin` field). v0.1.0–v0.1.2 defaulted to the npm package name, which
+   * spawn() then tried to exec literally; `read_settings` in the Rust layer
+   * migrates that wrong value forward to `trail`.
+   */
+  capture_cli_path: z.string().default('trail'),
   /**
    * "Your recent sessions" pin list (Sprint 2; gh#8 criterion 2). Up to 5
    * entries, LRU-ordered (most-recent first). Defaults to empty.
@@ -544,13 +550,23 @@ const githubPrUrlRegex =
  * "owner/name#PR" string (already shown pre-post in the M4 modal per
  * B6 P1 hardening; surfaced again post-success as confirmation).
  */
+/**
+ * v0.1.3 bug-1 hardening: every optional response field below is
+ * `.nullable().optional()`. The Rust struct (`ipc.rs::PostToPrResponse`)
+ * uses `#[serde(skip_serializing_if = "Option::is_none")]` so the
+ * canonical wire shape for `None` is "key absent" (which `.optional()`
+ * accepts). `.nullable()` is the belt-and-braces: a future regression
+ * that drops the `skip_serializing_if` would still survive Zod parse
+ * instead of red-bannering the renderer.
+ */
 export const postToPrResponseSchema = z.object({
   ok: z.boolean(),
-  pr_url: z.string().regex(githubPrUrlRegex).optional(),
-  destination: z.string().optional(),
+  pr_url: z.string().regex(githubPrUrlRegex).nullable().optional(),
+  destination: z.string().nullable().optional(),
   body_hash_prefix: z
     .string()
     .regex(/^[0-9a-f]{1,64}$/)
+    .nullable()
     .optional(),
 });
 
@@ -561,7 +577,8 @@ export const postToPrResponseSchema = z.object({
  */
 export const decideOnPrResponseSchema = z.object({
   ok: z.boolean(),
-  pr_url: z.string().regex(githubPrUrlRegex).optional(),
+  // v0.1.3 bug-1: see postToPrResponseSchema rationale.
+  pr_url: z.string().regex(githubPrUrlRegex).nullable().optional(),
   claim_id: z.string().min(1),
   decision: decisionKindSchema,
 });
@@ -589,11 +606,20 @@ export type SidebarRow = z.infer<typeof sidebarRowSchema>;
 
 export const queryTrailResponseSchema = z.object({
   packets: z.array(sidebarRowSchema),
-  next_cursor: z.string().optional(),
+  // v0.1.3 bug-1 ship-blocker: this is the field that bricked the
+  // desktop sidebar in v0.1.0–v0.1.2. The Rust handler returns
+  // `Option<String>` and serde was serialising `None` as JSON `null`.
+  // Plain `.optional()` accepts `undefined` (missing key) but NOT
+  // `null`, so every fresh install hit
+  // "Expected string, received null at next_cursor" on first paint.
+  // Rust side now uses `skip_serializing_if = "Option::is_none"`
+  // (omits the key), AND we accept `null` here as belt-and-braces.
+  next_cursor: z.string().nullable().optional(),
 });
 
 export const previewRedactedResponseSchema = z.object({
-  original: z.string().optional(),
+  // v0.1.3 bug-1: same nullable-optional pattern as next_cursor.
+  original: z.string().nullable().optional(),
 });
 
 /**

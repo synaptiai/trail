@@ -527,7 +527,8 @@ fn saga_to_ipc_error(e: SagaError) -> IpcError {
 //   1. Validate ULID + pr_number bounds.
 //   2. Look up packet's yaml_path from libSQL (defence in depth — caller
 //      passed packet_id, not yaml_path; we never trust UI-supplied paths).
-//   3. Resolve capture_cli_path from settings (default `@synapti/trail-capture`).
+//   3. Resolve capture_cli_path from settings (default `trail`, the binary
+//      installed by `npm install -g @synapti/trail-capture`).
 //   4. Resolve posted_by from settings (default username from $USER).
 //   5. Spawn `trail packet post --packet <yaml> --yes [--pr N] [--posted-by X]`
 //      via cli_bridge::invoke_packet_post on a blocking thread.
@@ -600,11 +601,20 @@ fn reject_auditor(persona: Persona, command: &'static str) -> IpcResult<()> {
     Ok(())
 }
 
+/// v0.1.3 bug-1: every `Option<T>` field below carries
+/// `#[serde(skip_serializing_if = "Option::is_none")]`. Without it,
+/// serde emits JSON `null` for `None`, which Zod's `.optional()` (used
+/// by `apps/ui/src/ipc/contract.ts::postToPrResponseSchema`) rejects —
+/// `.optional()` accepts `undefined` / missing key but NOT `null`.
+/// Skipping the key makes the wire shape match what Zod expects.
 #[derive(Serialize)]
 pub struct PostToPrResponse {
     pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body_hash_prefix: Option<String>,
 }
 
@@ -687,6 +697,8 @@ pub struct DecideOnPrArgs {
 #[derive(Serialize)]
 pub struct DecideOnPrResponse {
     pub ok: bool,
+    // v0.1.3 bug-1: skip None so Zod `.optional()` accepts the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
     pub claim_id: String,
     pub decision: String,
@@ -849,9 +861,10 @@ fn packet_op_to_ipc_error(err: crate::cli_bridge::PacketOpError) -> IpcError {
 }
 
 /// Resolve `(capture_cli_path, posted_by)` from settings.json. On any
-/// settings-read failure, fall back to safe defaults (`@synapti/trail-capture`
-/// and `$USER`). The fallback is intentional — a missing settings file
-/// is normal on first run, and the post path is still operable.
+/// settings-read failure, fall back to safe defaults
+/// ([`settings::DEFAULT_CAPTURE_CLI_PATH`] and `$USER`). The fallback is
+/// intentional — a missing settings file is normal on first run, and the
+/// post path is still operable.
 ///
 /// Cycle-1.5 F6 (gh#12): defence-in-depth — sanitise `posted_by` so a
 /// hostile or accidentally-malformed `$USER` (e.g. `--posted-by=other`,
@@ -869,7 +882,7 @@ fn read_cli_path_and_user() -> (String, String) {
         .as_ref()
         .and_then(|p| settings::read_settings(p).ok())
         .map(|s| s.capture_cli_path)
-        .unwrap_or_else(|| "@synapti/trail-capture".to_string());
+        .unwrap_or_else(|| settings::DEFAULT_CAPTURE_CLI_PATH.to_string());
     let raw_posted_by = std::env::var("TRAIL_POSTED_BY")
         .ok()
         .or_else(|| std::env::var("USER").ok())
@@ -942,6 +955,16 @@ pub struct QueryTrailArgs {
 #[derive(Serialize)]
 pub struct QueryTrailResponse {
     pub packets: Vec<SidebarRow>,
+    // v0.1.3 bug-1 ship-blocker: serde was emitting `"next_cursor":null`
+    // when there were no more rows, but the Zod schema in
+    // `apps/ui/src/ipc/contract.ts::queryTrailResponseSchema` uses
+    // `z.string().optional()` — which accepts `undefined` / missing
+    // key but NOT `null`. Result: EVERY `query_trail` call on a fresh
+    // install bricked the sidebar with "backend returned malformed
+    // response for query_trail: Expected string, received null at
+    // next_cursor". Skipping the key when None makes the wire match
+    // what Zod parses cleanly.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
@@ -1196,6 +1219,13 @@ pub struct PreviewRedactedArgs {
 
 #[derive(Serialize)]
 pub struct PreviewRedactedResponse {
+    // v0.1.3 bug-1: skip None so Zod `.optional()` accepts the response.
+    // This handler returns `None` on every call in v0.1.x (capture writes
+    // redacted-only by design), so without `skip_serializing_if` every
+    // M3 preview click would have hit the Zod-null mismatch the same way
+    // `query_trail` did. Caught proactively by the v0.1.3 audit even
+    // though Daniel's repro never reached this command.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub original: Option<String>,
 }
 

@@ -94,7 +94,7 @@ describe('<TrailSidebar> 1000-packet stress (gh#8 criterion 5)', () => {
         density: 'comfortable',
         disable_tamper_warnings: false,
         heavy_redaction_threshold: 15,
-        capture_cli_path: '@synapti/trail-capture',
+        capture_cli_path: 'trail',
         pinned_sessions: [],
       }),
     });
@@ -121,7 +121,7 @@ describe('<TrailSidebar> 1000-packet stress (gh#8 criterion 5)', () => {
         density: 'comfortable',
         disable_tamper_warnings: false,
         heavy_redaction_threshold: 15,
-        capture_cli_path: '@synapti/trail-capture',
+        capture_cli_path: 'trail',
         pinned_sessions: [],
       }),
     });
@@ -163,7 +163,7 @@ describe('<TrailSidebar> 1000-packet stress (gh#8 criterion 5)', () => {
         density: 'comfortable',
         disable_tamper_warnings: false,
         heavy_redaction_threshold: 15,
-        capture_cli_path: '@synapti/trail-capture',
+        capture_cli_path: 'trail',
         pinned_sessions: [],
       }),
     });

@@ -345,6 +345,51 @@ fn query_trail_dispatches_with_wrapped_args() {
     assert!(body.get("packets").is_some(), "response has packets key");
 }
 
+/// v0.1.3 bug-1 regression canary: when the Rust handler has no further
+/// page to return, the response MUST NOT carry `"next_cursor": null` —
+/// serde must omit the key entirely so the Zod `.optional()` schema in
+/// `apps/ui/src/ipc/contract.ts::queryTrailResponseSchema` accepts the
+/// payload.
+///
+/// v0.1.0–v0.1.2 shipped `pub next_cursor: Option<String>` without
+/// `#[serde(skip_serializing_if = "Option::is_none")]`. Daniel's fresh
+/// v0.1.2 install bricked the sidebar on first paint with
+/// "Expected string, received null at next_cursor". The B2 dispatch
+/// smoke (Request envelope) did not catch it because the failure was
+/// in the response shape, not the request shape. This test closes that
+/// gap — round-tripping the wire JSON through the SAME serializer the
+/// production Tauri runtime uses.
+#[test]
+fn query_trail_response_omits_next_cursor_when_none() {
+    let (app, _tmp) = boot_app_with_handlers();
+    let window = build_window(&app);
+    let res = dispatch_expect_resolved(
+        &window,
+        "query_trail",
+        json!({
+            "args": {
+                "filter": {},
+                "limit": 50,
+                "cursor": null,
+            }
+        }),
+    );
+    let body = res.expect("query_trail should succeed on an empty tempdir DB");
+    let obj = body.as_object().expect("response is a JSON object");
+    assert!(
+        !obj.contains_key("next_cursor"),
+        "v0.1.3 bug-1: next_cursor must be OMITTED when there's no \
+         further page (skip_serializing_if must be active). Got: {body}"
+    );
+    // Belt-and-braces: even if the key were present, a `null` would be
+    // the failure mode that bricked Daniel's v0.1.2.
+    assert_ne!(
+        obj.get("next_cursor"),
+        Some(&Value::Null),
+        "v0.1.3 bug-1: next_cursor must never serialize as JSON null"
+    );
+}
+
 #[test]
 fn query_recent_sessions_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();

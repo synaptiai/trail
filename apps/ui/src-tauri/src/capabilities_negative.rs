@@ -190,9 +190,9 @@ fn clipboard_read_text_permission_is_absent() {
 #[test]
 fn shell_allow_execute_lists_only_gh_subcommands() {
     // Every shell-allowed command MUST be a `gh` invocation. No bash,
-    // sh, /bin/sh, /usr/bin/env, no @synapti/trail-capture (which spawns its
-    // OWN gh — that subprocess is the cli_bridge surface, not the
-    // shell-allowlist surface).
+    // sh, /bin/sh, /usr/bin/env, no `trail` (which spawns its OWN gh —
+    // that subprocess is the cli_bridge surface, not the shell-allowlist
+    // surface).
     let cmds = shell_allow_execute_cmds();
     assert!(!cmds.is_empty(), "shell:allow-execute must declare at least one command");
     for cmd in &cmds {

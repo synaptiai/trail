@@ -325,12 +325,13 @@ function CapturePanel({ settings, onChange }: PanelProps) {
             // Editing invalidates any prior probe outcome.
             if (probe.state !== 'idle') setProbe({ state: 'idle' });
           }}
-          placeholder="@synapti/trail-capture"
+          placeholder="trail"
           aria-describedby="m6-capture-status"
         />
         <span className="type-body-sm m6__hint">
-          Default: <code>@synapti/trail-capture</code> (Phase 1 binary). Verify probes
-          the binary via <code>--version</code> before saving.
+          Default: <code>trail</code> (installed by{' '}
+          <code>npm install -g @synapti/trail-capture</code>). Verify probes the
+          binary via <code>--version</code> before saving.
         </span>
       </label>
       <div className="m6__capture-actions">

@@ -85,4 +85,56 @@ describe("findLatestSessionId — F10", () => {
 
     expect(findLatestSessionId(cwd)).toBeNull();
   });
+
+  // v0.1.3 bug-4: Claude Code identifies project root from where the user
+  // launched `claude`, which is often a parent of where the user later
+  // runs `trail`. Walk up cwd ancestors so the CLI finds the session
+  // even when invoked from a deeper subdirectory (e.g. the git repo
+  // satisfying bug-3's git-state check inside a multi-repo workspace).
+  test("walks up to a parent ancestor when the exact cwd has no project dir", () => {
+    const workspaceRoot = "/Users/alice/trail";
+    const subdir = "/Users/alice/trail/trail-internal";
+    // Claude Code's project dir corresponds to workspaceRoot.
+    const sanitized = workspaceRoot.replace(/\//g, "-");
+    const projectDir = join(fakeHome, ".claude", "projects", sanitized);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "ancestor-session.jsonl"), "{}\n");
+    // No project dir for the subdir itself.
+
+    expect(findLatestSessionId(subdir)).toBe("ancestor-session");
+  });
+
+  test("walks up multiple levels when needed", () => {
+    const root = "/Users/alice/work";
+    const deep = "/Users/alice/work/a/b/c/d/e";
+    const sanitized = root.replace(/\//g, "-");
+    const projectDir = join(fakeHome, ".claude", "projects", sanitized);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "deep-session.jsonl"), "{}\n");
+
+    expect(findLatestSessionId(deep)).toBe("deep-session");
+  });
+
+  test("prefers a closer ancestor over a more distant one", () => {
+    // If both /a/b/c and /a have project dirs, the closer one wins —
+    // matches the intuitive "this is the project I'm in" expectation.
+    const parent = "/Users/alice/parent";
+    const child = "/Users/alice/parent/child";
+    const cwd = "/Users/alice/parent/child/sub";
+
+    const parentDir = join(fakeHome, ".claude", "projects", parent.replace(/\//g, "-"));
+    const childDir = join(fakeHome, ".claude", "projects", child.replace(/\//g, "-"));
+    mkdirSync(parentDir, { recursive: true });
+    mkdirSync(childDir, { recursive: true });
+    writeFileSync(join(parentDir, "parent-session.jsonl"), "{}\n");
+    writeFileSync(join(childDir, "child-session.jsonl"), "{}\n");
+
+    expect(findLatestSessionId(cwd)).toBe("child-session");
+  });
+
+  test("stops at filesystem root without infinite-looping when no ancestor matches", () => {
+    // No project directories exist under fakeHome — the walk must
+    // terminate and return null, not loop forever on dirname('/') === '/'.
+    expect(findLatestSessionId("/some/deeply/nested/path")).toBeNull();
+  });
 });
