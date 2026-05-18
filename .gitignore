@@ -79,6 +79,7 @@ node_modules/
 .trail/*/trail.db-journal
 .trail/*/trail.db-wal
 .trail/*/trail.db-shm
+.trail/sessions/*
 # Content drafts and assets (not part of the framework)
 linkedin-source.md
 linkedin-*.pdf
