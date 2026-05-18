@@ -1,14 +1,17 @@
 // Per-DIFF parity (criterion 3 / spec §10).
 // Same approach as parity-mechanical: TS port vs py-reference (--per-diff).
+// Reads the committed redacted fixture (synaptiai/trail#5) so the test runs
+// in every contributor environment and on CI, not only on the maintainer's
+// live ~/.claude/projects/ tree.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import jsYaml from "js-yaml";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { synthesizeMechanical } from "../src/claims/mechanical.js";
 import { extract } from "../src/extract/extract.js";
 import { buildPacket } from "../src/packet/build.js";
@@ -16,21 +19,14 @@ import { Redactor } from "../src/redaction/layer1.js";
 import { loadPatterns } from "../src/redaction/patterns.js";
 import { loadTestRunnerRegex } from "../src/test-runners/patterns.js";
 import { readTranscriptSync } from "../src/transcript/reader.js";
+import { stageParityFixture } from "./helpers/parity-fixture.js";
 
 const SESSION_ID = "18e374b5-4eb9-424d-a3ff-a639d1c6fada";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKTREE_ROOT = join(__dirname, "..", "..", "..");
 const PY_REFERENCE_TRAIL = join(WORKTREE_ROOT, "py-reference", "cli", "trail.py");
 const REPO_ROOT = WORKTREE_ROOT;
-const TRANSCRIPT_PATH = join(
-  homedir(),
-  ".claude",
-  "projects",
-  "-Users-danielbentes-trail",
-  `${SESSION_ID}.jsonl`
-);
 
-const transcriptAvailable = existsSync(TRANSCRIPT_PATH);
 const pyReferenceAvailable = existsSync(PY_REFERENCE_TRAIL);
 const pythonAvailable = (() => {
   try {
@@ -41,11 +37,13 @@ const pythonAvailable = (() => {
   }
 })();
 
-describe.runIf(transcriptAvailable && pyReferenceAvailable && pythonAvailable)(
+describe.runIf(pyReferenceAvailable && pythonAvailable)(
   "per-DIFF parity vs py-reference (criterion 3 / spec §10)",
   () => {
     let pyPacket: Record<string, unknown>;
     let tsPacket: Record<string, unknown>;
+    const staging = stageParityFixture(SESSION_ID);
+    afterAll(staging.cleanup);
 
     beforeAll(() => {
       const dir = mkdtempSync(join(tmpdir(), "trail-parity-perdiff-"));
@@ -63,22 +61,46 @@ describe.runIf(transcriptAvailable && pyReferenceAvailable && pythonAvailable)(
           pyOut,
           "--no-render-md",
         ],
-        { encoding: "utf-8", timeout: 120_000 }
+        {
+          encoding: "utf-8",
+          timeout: 120_000,
+          env: {
+            ...process.env,
+            TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy,
+          },
+        }
       );
       if (r.status !== 0) {
-        throw new Error(`py-reference exited ${r.status}: ${r.stderr}`);
+        throw new Error(
+          `py-reference exited status=${r.status} signal=${r.signal ?? "none"}\n` +
+            `stderr:\n${r.stderr ?? "<empty>"}\n` +
+            `stdout:\n${r.stdout ?? "<empty>"}\n` +
+            `spawn error: ${r.error?.message ?? "none"}`
+        );
       }
-      pyPacket = jsYaml.load(readFileSync(pyOut, "utf-8")) as Record<string, unknown>;
+      // ERR-3 fix: mirror parity-mechanical's stable_id pre-load quoting so
+      // a per-DIFF stable_id matching `\d+e\d+...` shape doesn't get coerced
+      // to scientific notation (Infinity) by js-yaml. Same DF-S6 mechanism.
+      const rawYaml = readFileSync(pyOut, "utf-8").replace(
+        /^(\s*-?\s*stable_id:\s*)([0-9][0-9a-fA-FeE.+-]*)\s*$/gm,
+        '$1"$2"'
+      );
+      pyPacket = jsYaml.load(rawYaml, { schema: jsYaml.CORE_SCHEMA }) as Record<string, unknown>;
 
-      const records = readTranscriptSync(TRANSCRIPT_PATH);
-      const { version, patterns, origin } = loadPatterns(undefined, { useCache: false });
+      const records = readTranscriptSync(staging.fixturePath);
+      const { version, patterns, origin } = loadPatterns(undefined, {
+        useCache: false,
+      });
       const redactor = new Redactor(patterns);
       const data = extract(records, {
         redactor,
         testCommandRe: loadTestRunnerRegex(),
         repoRoot: REPO_ROOT,
       });
-      const claims = synthesizeMechanical(data, { perDiff: true, sessionId: SESSION_ID });
+      const claims = synthesizeMechanical(data, {
+        perDiff: true,
+        sessionId: SESSION_ID,
+      });
       const tsPacketObj = buildPacket({
         sessionId: SESSION_ID,
         data,

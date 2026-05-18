@@ -7,7 +7,7 @@ describe("Layer 1 redaction", () => {
   const { patterns, version, origin } = loadPatterns(undefined, { useCache: false });
   test("loaded ≥1 pattern from bundled YAML", () => {
     expect(patterns.length).toBeGreaterThan(0);
-    expect(version).toBe("0.1.3");
+    expect(version).toBe("0.1.4");
     expect(origin).toBe("bundled");
   });
 

@@ -1,25 +1,23 @@
 // Mechanical-mode parity (Phase 1 spec §10).
 //
-// Strategy: run py-reference's trail.py against the same live transcript we
-// run our TS port against, and compare the two parsed YAML outputs deep-equal
-// modulo allowed diffs (`_meta.packet_id` ULID, `_meta.generated_at`).
+// Strategy: run py-reference's trail.py against the committed redacted
+// fixture (synaptiai/trail#5) and compare the parsed YAML output to the TS
+// port's in-process build over the same fixture. Deep-equal modulo allowed
+// diffs (`_meta.packet_id` ULID, `_meta.generated_at`).
 //
-// Why not the static fixture? The canonical fixture (packet-1.yml) was
-// generated against a frozen transcript that is not committed to the repo;
-// the live transcript at ~/.claude/projects/... continues to grow as Claude
-// Code is used. py-reference is the executable spec — comparing TS output
-// to py-reference output against the same transcript directly tests
-// TS-vs-Python parity. The static fixture remains as a regression fixture
-// for future frozen-transcript test runs.
+// Pre-#5 this test gated on a live ~/.claude/projects/... transcript and
+// silently skipped on every contributor checkout + CI run. The committed
+// fixture removes that gate; the test now runs in any environment with
+// py-reference + python3 available.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import jsYaml from "js-yaml";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { synthesizeMechanical } from "../src/claims/mechanical.js";
 import { extract } from "../src/extract/extract.js";
 import { buildPacket } from "../src/packet/build.js";
@@ -27,6 +25,7 @@ import { Redactor } from "../src/redaction/layer1.js";
 import { loadPatterns } from "../src/redaction/patterns.js";
 import { loadTestRunnerRegex } from "../src/test-runners/patterns.js";
 import { readTranscriptSync } from "../src/transcript/reader.js";
+import { stageParityFixture } from "./helpers/parity-fixture.js";
 
 const SESSION_ID = "18e374b5-4eb9-424d-a3ff-a639d1c6fada";
 // Resolve py-reference relative to THIS worktree so parity always uses the
@@ -40,15 +39,6 @@ const PY_REFERENCE_TRAIL = join(WORKTREE_ROOT, "py-reference", "cli", "trail.py"
 // (i.e., the worktree root). Match that for parity.
 const REPO_ROOT = WORKTREE_ROOT;
 
-const TRANSCRIPT_PATH = join(
-  homedir(),
-  ".claude",
-  "projects",
-  "-Users-danielbentes-trail",
-  `${SESSION_ID}.jsonl`
-);
-
-const transcriptAvailable = existsSync(TRANSCRIPT_PATH);
 const pyReferenceAvailable = existsSync(PY_REFERENCE_TRAIL);
 const pythonAvailable = (() => {
   try {
@@ -59,11 +49,15 @@ const pythonAvailable = (() => {
   }
 })();
 
-describe.runIf(transcriptAvailable && pyReferenceAvailable && pythonAvailable)(
+describe.runIf(pyReferenceAvailable && pythonAvailable)(
   "mechanical-mode parity vs py-reference (criterion 2 / spec §10)",
   () => {
     let pyPacket: Record<string, unknown>;
     let tsPacket: Record<string, unknown>;
+    // Stage inside the runIf branch so the helper's loud-fail-on-missing
+    // semantics only triggers when py-reference is also present.
+    const staging = stageParityFixture(SESSION_ID);
+    afterAll(staging.cleanup);
 
     beforeAll(() => {
       // Run py-reference against the live transcript.
@@ -81,10 +75,25 @@ describe.runIf(transcriptAvailable && pyReferenceAvailable && pythonAvailable)(
           pyOut,
           "--no-render-md",
         ],
-        { encoding: "utf-8", timeout: 120_000 }
+        {
+          encoding: "utf-8",
+          timeout: 120_000,
+          // Honor py-reference's TRAIL_CLAUDE_PROJECTS_ROOT override so its
+          // transcript lookup hits the staged fixture. We keep HOME intact so
+          // Python still finds the user-site pyyaml install.
+          env: {
+            ...process.env,
+            TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy,
+          },
+        }
       );
       if (r.status !== 0) {
-        throw new Error(`py-reference exited ${r.status}: ${r.stderr}`);
+        throw new Error(
+          `py-reference exited status=${r.status} signal=${r.signal ?? "none"}\n` +
+            `stderr:\n${r.stderr ?? "<empty>"}\n` +
+            `stdout:\n${r.stdout ?? "<empty>"}\n` +
+            `spawn error: ${r.error?.message ?? "none"}`
+        );
       }
       // v0.1.2 DF-S6 (full fix): py-reference emits 16-char hex stable_id
       // values as bare scalars. js-yaml CORE_SCHEMA still permits YAML 1.1
@@ -112,16 +121,21 @@ describe.runIf(transcriptAvailable && pyReferenceAvailable && pythonAvailable)(
         schema: jsYaml.CORE_SCHEMA,
       }) as Record<string, unknown>;
 
-      // Run TS port logic in-process against same transcript.
-      const records = readTranscriptSync(TRANSCRIPT_PATH);
-      const { version, patterns, origin } = loadPatterns(undefined, { useCache: false });
+      // Run TS port logic in-process against the same fixture py-reference saw.
+      const records = readTranscriptSync(staging.fixturePath);
+      const { version, patterns, origin } = loadPatterns(undefined, {
+        useCache: false,
+      });
       const redactor = new Redactor(patterns);
       const data = extract(records, {
         redactor,
         testCommandRe: loadTestRunnerRegex(),
         repoRoot: REPO_ROOT,
       });
-      const claims = synthesizeMechanical(data, { perDiff: false, sessionId: SESSION_ID });
+      const claims = synthesizeMechanical(data, {
+        perDiff: false,
+        sessionId: SESSION_ID,
+      });
       const tsPacketObj = buildPacket({
         sessionId: SESSION_ID,
         data,
