@@ -160,6 +160,20 @@ jobs:
         # transitively pulls in the design system surface.
         run: pnpm --filter @trail/ui run tokens:gen
 
+      - name: Build frontend (vite production)
+        # `cargo test --test ipc_dispatch_smoke` triggers compilation of
+        # the `trail-ui` binary whose build.rs invokes
+        # `tauri::generate_context!`. That macro validates
+        # `tauri.conf.json::frontendDist` resolves on disk — without a
+        # prior `pnpm build`, the dist/ tree is absent and the proc macro
+        # panics with "frontendDist is set to '../dist' but this path
+        # doesn't exist" before our test even compiles. Surfaced on
+        # release run 26031103214 (gh#2 Phase 2 first fire).
+        # ui-quality-gates handles this via an artifact transfer from
+        # the ts-quality job; release.yml's wire-roundtrip job is
+        # standalone so it builds inline.
+        run: pnpm --filter @trail/ui run build
+
       - name: cargo test (emits wire snapshots)
         working-directory: apps/ui/src-tauri
         run: cargo test --test ipc_dispatch_smoke --locked
