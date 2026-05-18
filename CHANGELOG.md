@@ -21,9 +21,41 @@ invoke the state-mutation IPC via `__TAURI_INTERNALS__.invoke(...)`.
 - Three `b9_seed_stress_packets_*` unit tests pin the contract:
   `rejects_auditor`, `accepts_creator`, `accepts_reviewer`.
 
-Public issue #8 criteria (iii) + (iv) are addressed. Criteria (i)
-(per-platform binary `nm`/`strings` audit step in CI) and (ii)
-(fail-on-symbol-present) remain open in a separate cycle.
+Public issue #8 criteria (iii) + (iv) are addressed.
+
+### Security — gh#8 (i)+(ii): release-binary symbol audit in CI
+
+Closes the remaining two acceptance criteria of #8. Verifies — at every
+tagged release — that the `cfg`-gated test-fixture symbols never leak
+into a production binary on any platform.
+
+- `scripts/audit-release-symbols.sh` greps each freshly-built `trail-ui`
+  (and `trail-ui.exe`) under `apps/ui/src-tauri/target/**/release/` for
+  the forbidden symbol list. `grep -a` (binary-as-text) is portable
+  across macOS, Linux, and Windows Git Bash. Exits 1 if any leak is
+  detected; exits 0 otherwise.
+- `.github/workflows/release.yml` invokes the script in each
+  `tauri-build` matrix leg, immediately after `tauri-action` and before
+  the installer-upload step. A leaked symbol fails the matrix leg and
+  blocks the release.
+- Local positive control (`cargo build --release --features test-fixtures`):
+  audit emits "FAIL: 'seed_stress_packets' found 3× in …" and exits 1.
+- Local negative control (clean `cargo build --release`): audit emits
+  "OK: 'seed_stress_packets' absent from …" and exits 0.
+
+With this step in place, **issue #8 is fully closed** — all four
+acceptance criteria (i)+(ii)+(iii)+(iv) have shipping evidence.
+
+### Changed — public mirror CI parity
+
+- `.github/workflows/capture-quality-gates.yml` is now synced to
+  `synaptiai/trail` so PRs that touch `apps/capture/**` run the same
+  TS typecheck + biome lint + vitest suite on the public mirror that
+  they already run on the maintainer's internal repo. The previous
+  state allowed apps/capture/ PRs to pass on public CI even with
+  type / lint / test regressions.
+- `scripts/sync-to-public.sh` allowlist updated to include the new
+  workflow plus the audit script invoked by `release.yml`.
 
 ## [0.1.4] — 2026-05-18
 
