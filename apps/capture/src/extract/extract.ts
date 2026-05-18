@@ -254,7 +254,12 @@ export function extract(records: TranscriptRecord[], opts: ExtractOptions): Extr
             testN += 1;
             tests.push({
               id: `TEST-${pad3(testN)}`,
-              ref: redactor.redact(sliceCp(cmd, MAX_TEST_REF_CHARS)),
+              // Two-stage slice: pre-redaction bounds the redactor's input
+              // cost; post-redaction re-bounds because redaction markers can
+              // expand the string past the schema cap (e.g.,
+              // `[REDACTED:home-path]` is 20 chars vs `/Users/<name>` ~15).
+              // Mid-marker truncation is acceptable — refs are summaries.
+              ref: sliceCp(redactor.redact(sliceCp(cmd, MAX_TEST_REF_CHARS)), MAX_TEST_REF_CHARS),
               cmd_ref: cmdId,
             });
           }
