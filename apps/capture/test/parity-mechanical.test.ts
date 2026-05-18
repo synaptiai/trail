@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import jsYaml from "js-yaml";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { synthesizeMechanical } from "../src/claims/mechanical.js";
 import { extract } from "../src/extract/extract.js";
 import { buildPacket } from "../src/packet/build.js";
@@ -39,7 +39,6 @@ const PY_REFERENCE_TRAIL = join(WORKTREE_ROOT, "py-reference", "cli", "trail.py"
 // (i.e., the worktree root). Match that for parity.
 const REPO_ROOT = WORKTREE_ROOT;
 
-const staging = stageParityFixture(SESSION_ID);
 const pyReferenceAvailable = existsSync(PY_REFERENCE_TRAIL);
 const pythonAvailable = (() => {
   try {
@@ -50,11 +49,15 @@ const pythonAvailable = (() => {
   }
 })();
 
-describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
+describe.runIf(pyReferenceAvailable && pythonAvailable)(
   "mechanical-mode parity vs py-reference (criterion 2 / spec §10)",
   () => {
     let pyPacket: Record<string, unknown>;
     let tsPacket: Record<string, unknown>;
+    // Stage inside the runIf branch so the helper's loud-fail-on-missing
+    // semantics only triggers when py-reference is also present.
+    const staging = stageParityFixture(SESSION_ID);
+    afterAll(staging.cleanup);
 
     beforeAll(() => {
       // Run py-reference against the live transcript.
@@ -78,11 +81,19 @@ describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
           // Honor py-reference's TRAIL_CLAUDE_PROJECTS_ROOT override so its
           // transcript lookup hits the staged fixture. We keep HOME intact so
           // Python still finds the user-site pyyaml install.
-          env: { ...process.env, TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy },
+          env: {
+            ...process.env,
+            TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy,
+          },
         }
       );
       if (r.status !== 0) {
-        throw new Error(`py-reference exited ${r.status}: ${r.stderr}`);
+        throw new Error(
+          `py-reference exited status=${r.status} signal=${r.signal ?? "none"}\n` +
+            `stderr:\n${r.stderr ?? "<empty>"}\n` +
+            `stdout:\n${r.stdout ?? "<empty>"}\n` +
+            `spawn error: ${r.error?.message ?? "none"}`
+        );
       }
       // v0.1.2 DF-S6 (full fix): py-reference emits 16-char hex stable_id
       // values as bare scalars. js-yaml CORE_SCHEMA still permits YAML 1.1
@@ -112,14 +123,19 @@ describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
 
       // Run TS port logic in-process against the same fixture py-reference saw.
       const records = readTranscriptSync(staging.fixturePath);
-      const { version, patterns, origin } = loadPatterns(undefined, { useCache: false });
+      const { version, patterns, origin } = loadPatterns(undefined, {
+        useCache: false,
+      });
       const redactor = new Redactor(patterns);
       const data = extract(records, {
         redactor,
         testCommandRe: loadTestRunnerRegex(),
         repoRoot: REPO_ROOT,
       });
-      const claims = synthesizeMechanical(data, { perDiff: false, sessionId: SESSION_ID });
+      const claims = synthesizeMechanical(data, {
+        perDiff: false,
+        sessionId: SESSION_ID,
+      });
       const tsPacketObj = buildPacket({
         sessionId: SESSION_ID,
         data,

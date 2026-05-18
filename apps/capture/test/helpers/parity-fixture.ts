@@ -8,7 +8,7 @@
 // contributor checkout and CI run because the live transcript path was
 // absent.
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,27 +18,49 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export interface ParityFixtureStaging {
   /** Absolute path to the committed redacted fixture. The TS port reads from this directly. */
   fixturePath: string;
-  /** Value to set as `TRAIL_CLAUDE_PROJECTS_ROOT` on the py-reference subprocess env. Empty when unavailable. */
+  /** Value to set as `TRAIL_CLAUDE_PROJECTS_ROOT` on the py-reference subprocess env. */
   projectsRootForPy: string;
-  /** False only if the fixture is missing from the worktree (e.g., a stale checkout). */
-  available: boolean;
+  /** Callback that vitest's `afterAll` should invoke to remove the staged tempdir. */
+  cleanup: () => void;
 }
 
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 export function stageParityFixture(sessionId: string): ParityFixtureStaging {
-  const fixturePath = join(
-    __dirname,
-    "..",
-    "fixtures",
-    `${sessionId}.redacted.jsonl`,
-  );
-  if (!existsSync(fixturePath)) {
-    return { fixturePath, projectsRootForPy: "", available: false };
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error(
+      `stageParityFixture: invalid sessionId "${sessionId}" (must match UUID v4 shape)`
+    );
   }
-  // py-reference iterates every dir under `<projects-root>/` and matches by
-  // `<session_id>.jsonl`. Any non-empty inner dirname works.
+  const fixturePath = join(__dirname, "..", "fixtures", `${sessionId}.redacted.jsonl`);
+  // The fixture is committed to the repo. A missing fixture is a tooling
+  // failure (stale checkout, accidental delete, failed LFS pull), not a
+  // legitimate environmental absence — so we throw loudly instead of
+  // returning `{ available: false }` and letting the parity suite skip
+  // silently. Silent-skip is the failure mode #5 was created to eliminate.
+  try {
+    statSync(fixturePath);
+  } catch (err) {
+    const reason = (err as Error).message;
+    const msg = `stageParityFixture: committed fixture missing at ${fixturePath} — tooling failure, not a legitimate skip. Underlying: ${reason}`;
+    throw new Error(msg);
+  }
   const projectsRootForPy = mkdtempSync(join(tmpdir(), "trail-parity-projects-"));
-  const sessionDir = join(projectsRootForPy, "-fixture");
-  mkdirSync(sessionDir, { recursive: true });
-  copyFileSync(fixturePath, join(sessionDir, `${sessionId}.jsonl`));
-  return { fixturePath, projectsRootForPy, available: true };
+  let staged = false;
+  try {
+    // py-reference iterates every dir under `<projects-root>/` and matches by
+    // `<session_id>.jsonl`. Any non-empty inner dirname works.
+    const sessionDir = join(projectsRootForPy, "-fixture");
+    mkdirSync(sessionDir, { recursive: true });
+    copyFileSync(fixturePath, join(sessionDir, `${sessionId}.jsonl`));
+    staged = true;
+  } finally {
+    if (!staged) {
+      // Stage failed mid-way. Release the tempdir we just minted so the
+      // worktree doesn't accumulate orphans on repeat-failed runs.
+      rmSync(projectsRootForPy, { recursive: true, force: true });
+    }
+  }
+  const cleanup = () => rmSync(projectsRootForPy, { recursive: true, force: true });
+  return { fixturePath, projectsRootForPy, cleanup };
 }

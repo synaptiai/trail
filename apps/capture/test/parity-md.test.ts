@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { Packet } from "../src/packet/types.js";
 // [F24 / 2026-05-09] Use our pyyaml-compatible loadYaml rather than raw
 // jsYaml.load. The default js-yaml schema's float resolver matches
@@ -32,7 +32,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKTREE_ROOT = join(__dirname, "..", "..", "..");
 const PY_REFERENCE_TRAIL = join(WORKTREE_ROOT, "py-reference", "cli", "trail.py");
 
-const staging = stageParityFixture(SESSION_ID);
 const pyReferenceAvailable = existsSync(PY_REFERENCE_TRAIL);
 const pythonAvailable = (() => {
   try {
@@ -43,13 +42,15 @@ const pythonAvailable = (() => {
   }
 })();
 
-describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
+describe.runIf(pyReferenceAvailable && pythonAvailable)(
   "markdown render parity vs py-reference (criterion 4 / spec §10)",
   () => {
     let pyMd: string;
     let tsMd: string;
     let packet: Packet;
     let pyOut: string;
+    const staging = stageParityFixture(SESSION_ID);
+    afterAll(staging.cleanup);
 
     beforeAll(() => {
       const dir = mkdtempSync(join(tmpdir(), "trail-parity-md-"));
@@ -61,11 +62,19 @@ describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
         {
           encoding: "utf-8",
           timeout: 120_000,
-          env: { ...process.env, TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy },
+          env: {
+            ...process.env,
+            TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy,
+          },
         }
       );
       if (r.status !== 0) {
-        throw new Error(`py-reference exited ${r.status}: ${r.stderr}`);
+        throw new Error(
+          `py-reference exited status=${r.status} signal=${r.signal ?? "none"}\n` +
+            `stderr:\n${r.stderr ?? "<empty>"}\n` +
+            `stdout:\n${r.stdout ?? "<empty>"}\n` +
+            `spawn error: ${r.error?.message ?? "none"}`
+        );
       }
       pyMd = readFileSync(pyMdPath, "utf-8");
       packet = loadYaml(readFileSync(pyOut, "utf-8")) as Packet;
@@ -125,7 +134,11 @@ describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
       const firstDiff = pyLines.findIndex((l, i) => l !== tsLines[i]);
       if (firstDiff !== -1) {
         // Surface the divergence verbatim for debugging.
-        expect({ idx: firstDiff, py: pyLines[firstDiff], ts: tsLines[firstDiff] }).toEqual({
+        expect({
+          idx: firstDiff,
+          py: pyLines[firstDiff],
+          ts: tsLines[firstDiff],
+        }).toEqual({
           idx: firstDiff,
           py: pyLines[firstDiff],
           ts: pyLines[firstDiff],

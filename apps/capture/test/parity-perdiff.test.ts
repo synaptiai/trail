@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import jsYaml from "js-yaml";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { synthesizeMechanical } from "../src/claims/mechanical.js";
 import { extract } from "../src/extract/extract.js";
 import { buildPacket } from "../src/packet/build.js";
@@ -27,7 +27,6 @@ const WORKTREE_ROOT = join(__dirname, "..", "..", "..");
 const PY_REFERENCE_TRAIL = join(WORKTREE_ROOT, "py-reference", "cli", "trail.py");
 const REPO_ROOT = WORKTREE_ROOT;
 
-const staging = stageParityFixture(SESSION_ID);
 const pyReferenceAvailable = existsSync(PY_REFERENCE_TRAIL);
 const pythonAvailable = (() => {
   try {
@@ -38,11 +37,13 @@ const pythonAvailable = (() => {
   }
 })();
 
-describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
+describe.runIf(pyReferenceAvailable && pythonAvailable)(
   "per-DIFF parity vs py-reference (criterion 3 / spec §10)",
   () => {
     let pyPacket: Record<string, unknown>;
     let tsPacket: Record<string, unknown>;
+    const staging = stageParityFixture(SESSION_ID);
+    afterAll(staging.cleanup);
 
     beforeAll(() => {
       const dir = mkdtempSync(join(tmpdir(), "trail-parity-perdiff-"));
@@ -63,23 +64,43 @@ describe.runIf(staging.available && pyReferenceAvailable && pythonAvailable)(
         {
           encoding: "utf-8",
           timeout: 120_000,
-          env: { ...process.env, TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy },
+          env: {
+            ...process.env,
+            TRAIL_CLAUDE_PROJECTS_ROOT: staging.projectsRootForPy,
+          },
         }
       );
       if (r.status !== 0) {
-        throw new Error(`py-reference exited ${r.status}: ${r.stderr}`);
+        throw new Error(
+          `py-reference exited status=${r.status} signal=${r.signal ?? "none"}\n` +
+            `stderr:\n${r.stderr ?? "<empty>"}\n` +
+            `stdout:\n${r.stdout ?? "<empty>"}\n` +
+            `spawn error: ${r.error?.message ?? "none"}`
+        );
       }
-      pyPacket = jsYaml.load(readFileSync(pyOut, "utf-8")) as Record<string, unknown>;
+      // ERR-3 fix: mirror parity-mechanical's stable_id pre-load quoting so
+      // a per-DIFF stable_id matching `\d+e\d+...` shape doesn't get coerced
+      // to scientific notation (Infinity) by js-yaml. Same DF-S6 mechanism.
+      const rawYaml = readFileSync(pyOut, "utf-8").replace(
+        /^(\s*-?\s*stable_id:\s*)([0-9][0-9a-fA-FeE.+-]*)\s*$/gm,
+        '$1"$2"'
+      );
+      pyPacket = jsYaml.load(rawYaml, { schema: jsYaml.CORE_SCHEMA }) as Record<string, unknown>;
 
       const records = readTranscriptSync(staging.fixturePath);
-      const { version, patterns, origin } = loadPatterns(undefined, { useCache: false });
+      const { version, patterns, origin } = loadPatterns(undefined, {
+        useCache: false,
+      });
       const redactor = new Redactor(patterns);
       const data = extract(records, {
         redactor,
         testCommandRe: loadTestRunnerRegex(),
         repoRoot: REPO_ROOT,
       });
-      const claims = synthesizeMechanical(data, { perDiff: true, sessionId: SESSION_ID });
+      const claims = synthesizeMechanical(data, {
+        perDiff: true,
+        sessionId: SESSION_ID,
+      });
       const tsPacketObj = buildPacket({
         sessionId: SESSION_ID,
         data,

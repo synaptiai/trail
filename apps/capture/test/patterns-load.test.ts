@@ -311,9 +311,11 @@ describe("[F8 / 2026-05-09] bundled-pattern integrity audit", () => {
     // To rotate: review the new bundled YAML for ReDoS risk, then update
     // both the YAML and this constant in the same commit. The pin makes
     // bundled-pattern rotation an explicit, reviewer-visible change.
-    // Pinned at v0.1.3 (post §Y.3 normalization, 2026-05-09).
-    const pinnedHashV0_1_3 = "0974eb113d2af4eae358e16ad820cb6f1362754dec4dde861c1c1dc00b980892";
-    expect(actualHash).toBe(pinnedHashV0_1_3);
+    // Pinned at v0.1.4 (gh#5 fix-forward: ADDED home-path pattern with
+    // bounded `[A-Za-z0-9._-]+` char class — see catalog comments for
+    // rationale).
+    const pinnedHashV0_1_4 = "7297b5e1c34d65a0a5e77646d2729afef1c7e20a9e797d65c17bbcc3ea8bdcd8";
+    expect(actualHash).toBe(pinnedHashV0_1_4);
   });
 
   test("bundled patterns are individually compilable as JS RegExp", () => {
@@ -357,6 +359,8 @@ describe("[F8 / 2026-05-09] bundled-pattern integrity audit", () => {
       "bearer-token-header",
       "jwt",
       "high-entropy-string",
+      // gh#5: bounded `[A-Za-z0-9._-]+` char class, no backtracking — safe.
+      "home-path",
     ]);
     for (const p of r.patterns) {
       expect(
@@ -430,7 +434,7 @@ describe("[F19 / 2026-05-09] bundled YAML drift prevention (canonical ↔ packag
     const canonical = resolve(repoRoot, "bin", "trail-redaction-patterns.yml");
     const buf = readFileSync(canonical);
     const actualHash = createHash("sha256").update(buf).digest("hex");
-    const pinnedHashV0_1_3 = "0974eb113d2af4eae358e16ad820cb6f1362754dec4dde861c1c1dc00b980892";
-    expect(actualHash).toBe(pinnedHashV0_1_3);
+    const pinnedHashV0_1_4 = "7297b5e1c34d65a0a5e77646d2729afef1c7e20a9e797d65c17bbcc3ea8bdcd8";
+    expect(actualHash).toBe(pinnedHashV0_1_4);
   });
 });
