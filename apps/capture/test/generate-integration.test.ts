@@ -1,25 +1,27 @@
-// End-to-end integration test for generate() — real transcript, real disk write.
+// End-to-end integration test for generate() — committed fixture, real disk write.
+//
+// Pre-#5-fix-forward this gated on `transcriptAvailable` against
+// `~/.claude/projects/...` and silently skipped on every CI run +
+// contributor checkout. Post-fix-forward it consumes the same
+// committed fixture as the parity suites (`stageParityFixture` exposes
+// the fixture path) so the run is deterministic and CI-resident.
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import jsYaml from "js-yaml";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { generate } from "../src/generate.js";
 import { VERSION } from "../src/version.js";
+import { stageParityFixture } from "./helpers/parity-fixture.js";
 
 const SESSION_ID = "18e374b5-4eb9-424d-a3ff-a639d1c6fada";
-const TRANSCRIPT_PATH = join(
-  homedir(),
-  ".claude",
-  "projects",
-  "-Users-danielbentes-trail",
-  `${SESSION_ID}.jsonl`
-);
 
-const transcriptAvailable = existsSync(TRANSCRIPT_PATH);
+describe("generate() integration", () => {
+  const staging = stageParityFixture(SESSION_ID);
+  const TRANSCRIPT_PATH = staging.fixturePath;
+  afterAll(staging.cleanup);
 
-describe.runIf(transcriptAvailable)("generate() integration", () => {
   test("produces packet-1.yml + packet-1.md against fresh state", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "trail-int-"));
     // Initialize as a git repo so collectGitState succeeds.

@@ -21,26 +21,25 @@
 // exitCode stays 0. Pattern mirrors generate-integration.test.ts.
 
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { generate } from "../src/generate.js";
 import { NoopStorageWriter } from "../src/storage/noop.js";
 import { StorageUnavailableError } from "../src/storage/sqlite.js";
 import type { StorageWriter } from "../src/storage/types.js";
+import { stageParityFixture } from "./helpers/parity-fixture.js";
 
 const SESSION_ID = "18e374b5-4eb9-424d-a3ff-a639d1c6fada";
-const TRANSCRIPT_PATH = join(
-  homedir(),
-  ".claude",
-  "projects",
-  "-Users-danielbentes-trail",
-  `${SESSION_ID}.jsonl`
-);
 
-const transcriptAvailable = existsSync(TRANSCRIPT_PATH);
+describe("storage best-effort fallback (F7 / F21 e2e)", () => {
+  // gh#5 fix-forward: consume the committed redacted fixture instead of
+  // the live ~/.claude/projects/ transcript so the run is deterministic
+  // and CI-resident. Pre-fix-forward this self-skipped on every CI run.
+  const staging = stageParityFixture(SESSION_ID);
+  const TRANSCRIPT_PATH = staging.fixturePath;
+  afterAll(staging.cleanup);
 
-describe.runIf(transcriptAvailable)("storage best-effort fallback (F7 / F21 e2e)", () => {
   test("StorageUnavailableError thrown by writer is caught by generate(); fallback emits documented stderr note + exit 0", async () => {
     // Set up a real transcript-backed run targeting a fresh session
     // workspace, exactly like generate-integration.test.ts. The only
