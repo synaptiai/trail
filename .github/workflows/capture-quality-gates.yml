@@ -1,0 +1,86 @@
+name: Capture Quality Gates (TS)
+
+# v0.1.2 (#75): parallel to ui-quality-gates.yml. Runs the apps/capture
+# typecheck + lint + vitest on every PR that touches apps/capture, schema/,
+# bin/trail-redaction-patterns.yml, or this workflow.
+#
+# Why a separate workflow from ui-quality-gates.yml: the capture package is
+# pure TS + Node (no Rust, no Tauri). Its quality gate has no need for the
+# webkit2gtk system deps or the cross-job artifact handoff that the UI gate
+# needs. Faster + cheaper to scope.
+#
+# Trigger scope mirrors the path filters of ui-quality-gates.yml: only
+# paths that affect the capture pipeline.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/capture/**'
+      - 'schema/**'
+      - 'bin/trail-redaction-patterns.yml'
+      - 'bin/trail-test-runners.yml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - 'tsconfig.base.json'
+      - '.github/workflows/capture-quality-gates.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/capture/**'
+      - 'schema/**'
+      - 'bin/trail-redaction-patterns.yml'
+      - 'bin/trail-test-runners.yml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - 'tsconfig.base.json'
+      - '.github/workflows/capture-quality-gates.yml'
+
+concurrency:
+  group: capture-quality-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture-quality:
+    name: TS — typecheck, lint, vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (tsc --noEmit)
+        run: pnpm --filter @synapti/trail-capture run typecheck
+
+      - name: Lint (biome check)
+        run: pnpm --filter @synapti/trail-capture run lint
+
+      - name: Vitest (unit tests + parity tests)
+        # parity-mechanical / parity-md / parity-perdiff suites compare TS
+        # port output against py-reference for the canonical session
+        # transcript. They run automatically when the transcript + py3 are
+        # available; CI's setup-node doesn't include py3 with the
+        # py-reference deps, so those particular tests `describe.runIf`
+        # themselves to skip cleanly. The vitest gate still asserts the
+        # rest of the suite.
+        run: pnpm --filter @synapti/trail-capture run test
+
+      - name: Build (tsc + copy-bin)
+        # Verifies the production tarball assembly path. copy-bin.mjs
+        # mirrors canonical schema + patterns into the dist/ layout the
+        # npm tarball ships. A regression here would have re-introduced
+        # the v0.1.0 DF-S1 ship-blocker (schema not bundled).
+        run: pnpm --filter @synapti/trail-capture run build

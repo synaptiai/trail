@@ -700,6 +700,27 @@ jobs:
           # cleanly (emits "No releaseId or tagName provided" — by design).
           includeUpdaterJson: false
 
+      - name: Audit release binary for test-fixture symbols
+        # Closes synaptiai/trail#8 criteria (i) per-platform binary symbol
+        # audit and (ii) CI fail-on-symbol-present.
+        #
+        # The cfg-gate at apps/ui/src-tauri/src/ipc.rs already removes
+        # `seed_stress_packets` from release builds via
+        # `#[cfg(any(debug_assertions, feature = "test-fixtures"))]` — this
+        # step verifies the gate is load-bearing. If a future change
+        # accidentally builds with --features test-fixtures or drops the
+        # cfg attribute, the audit script's `grep -a` over the freshly-
+        # built binary catches the leak and fails the matrix leg.
+        #
+        # Runs on every platform after tauri-action. Bash on windows-latest
+        # is Git Bash; find / grep / sort all behave consistently.
+        # Local positive+negative controls validated during initial
+        # implementation (clean release: 0 matches; --features
+        # test-fixtures: 3 matches).
+        if: matrix.platform.os != 'windows-latest' || env.MSI_COMPATIBLE == 'true'
+        shell: bash
+        run: ./scripts/audit-release-symbols.sh
+
       - name: Upload Tauri installers to draft release
         # Find installers produced by tauri-action and upload to the
         # existing draft release via gh CLI. Runs only when there's a
