@@ -619,17 +619,22 @@ mod tests {
         use std::fs::{self, File};
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
-        // Per-call tempdir avoids ETXTBSY ("Text file busy", errno 26)
-        // observed on Linux CI when parallel cargo test threads exec
-        // scripts within a SHARED parent dir. The earlier sibling-thread
-        // workaround (atomic SEQ + per-process dir + sync_all + scope drop)
-        // was insufficient: ETXTBSY can still fire when a sibling thread
-        // holds a writeable FD that the kernel hasn't flushed from the
-        // dir's open-file table at the moment of fork+exec. Per-call
-        // tempdir eliminates the shared-parent-dir vector entirely —
-        // each test's script.sh lives in its own randomly-named dir.
-        // Observed in CI run 26027652183 (gh#2 Phase 1 land) and historic
-        // PR #21 cycle-1 run 25613777334.
+        // Per-call tempdir + post-write read-open-sync. Together these
+        // address two layers of the ETXTBSY ("Text file busy", errno 26)
+        // race observed on Linux CI when parallel cargo test threads
+        // create + exec scripts:
+        //
+        //   1. Per-call tempdir eliminates the shared-parent-dir vector
+        //      (sibling threads no longer share an open-file-table slot
+        //      on the parent inode).
+        //   2. Post-write read-open-sync forces the kernel to commit the
+        //      file's writeable-FD state — without this, Command::spawn()
+        //      can fork() while the kernel still considers the file
+        //      "recently writeable" and exec() returns ETXTBSY.
+        //
+        // Earlier single-layer fixes (atomic SEQ + sync_all + scope drop)
+        // were insufficient on their own. Observed in CI runs 26027652183
+        // and 26028048015 (gh#2 Phase 1 land).
         let dir = tempfile::Builder::new()
             .prefix("trail-cli-bridge-test-")
             .tempdir()
@@ -645,12 +650,41 @@ mod tests {
         let mut perms = fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&path, perms).unwrap();
+        // Read-open + sync_all + close after chmod. The act of opening
+        // the file read-only, fsyncing, and closing forces the kernel to
+        // fully release any pending writeable-FD bookkeeping. Without
+        // this re-open dance, ETXTBSY fires intermittently at exec.
+        {
+            let f = File::open(&path).expect("re-open ro for sync");
+            f.sync_all().expect("sync after reopen");
+        }
         // Leak the tempdir handle so the script outlives this function;
-        // probe_capture_version below must exec the path. The OS reaps
-        // /tmp on next boot — cost is bounded by the cli_bridge test
-        // count (<10), and CI runners are ephemeral.
+        // probe_capture_version below must exec the path. OS reaps /tmp
+        // on next boot — cost is bounded (<10 cli_bridge tests).
         std::mem::forget(dir);
         path
+    }
+
+    /// ETXTBSY retry wrapper for tests that exec a freshly-written script.
+    /// Even with per-call tempdir + re-open-sync, the Linux kernel
+    /// occasionally still returns "Text file busy" at fork+exec when
+    /// parallel test threads are concurrently active. The retry is a
+    /// last-mile defense: up to 5 attempts with linear backoff.
+    fn probe_with_etxtbsy_retry(bin: &str) -> Result<CaptureVersion, BridgeError> {
+        for attempt in 0u64..5 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(50 * attempt));
+            }
+            match probe_capture_version(bin) {
+                Err(BridgeError::Spawn(msg))
+                    if msg.contains("Text file busy") && attempt < 4 =>
+                {
+                    continue;
+                }
+                other => return other,
+            }
+        }
+        unreachable!("retry loop exits via the `other` arm")
     }
 
     /// Not a fake — invokes a REAL subprocess (a handcrafted shell script
@@ -663,7 +697,7 @@ mod tests {
     #[test]
     fn probe_returns_first_line_of_stdout() {
         let script = write_test_script("printf '0.1.0-dev\\n'");
-        let result = probe_capture_version(&script.to_string_lossy());
+        let result = probe_with_etxtbsy_retry(&script.to_string_lossy());
         assert!(
             result.is_ok(),
             "real subprocess invocation must succeed: {result:?}"
@@ -687,7 +721,7 @@ mod tests {
         // (Sprint 5 fix: GNU `true --version` on Linux emits a banner;
         // a handcrafted no-output script is platform-portable.)
         let script = write_test_script("exit 0");
-        let result = probe_capture_version(&script.to_string_lossy());
+        let result = probe_with_etxtbsy_retry(&script.to_string_lossy());
         match result {
             Err(BridgeError::InvalidStdout(_)) => {}
             other => panic!("expected InvalidStdout error, got {other:?}"),
@@ -698,7 +732,7 @@ mod tests {
     fn probe_rejects_non_zero_exit() {
         // Script exits 1 with no output; bridge must return NonZeroExit.
         let script = write_test_script("exit 1");
-        let result = probe_capture_version(&script.to_string_lossy());
+        let result = probe_with_etxtbsy_retry(&script.to_string_lossy());
         match result {
             Err(BridgeError::NonZeroExit { code, .. }) => {
                 assert_eq!(code, 1);
