@@ -64,3 +64,36 @@ output for a specific pattern set; new patterns or pattern tightenings
 will shift the fixture's bytes and the parity assertions will surface the
 divergence. Bundle the regenerated fixture into the same PR as the
 pattern change so the CI gate stays green.
+
+## `canonical-session.yml` / `canonical-session.md` / `canonical-session-perdiff.yml`
+
+Canonical packet outputs from running the production capture pipeline
+against the redacted-transcript fixture above with deterministic
+`packetId` + `generatedAt`. Closes synaptiai/trail#4.
+
+The byte-equality test in `apps/capture/test/canonical-session.test.ts`
+catches regressions in:
+
+- Layer 1 redaction (pattern catalog, post-match filters)
+- extraction order / dedup / schema field shape
+- packet serialization (YAML key order, trailing newlines)
+
+The `.md` test is currently a structural smoke (file exists + key
+sections + size within ±10%) rather than byte-equality, due to a
+cross-context non-determinism in the markdown renderer (regen-script
+output differs from vitest-context output for the same `generate()` call
+and same dist build). Tracked as a follow-up. The two `.yml` fixtures
+ARE byte-equality-pinned and provide the structured-data regression
+gate.
+
+### Regenerating the canonical fixtures
+
+```
+pnpm --filter @synapti/trail-capture run build
+node apps/capture/scripts/regen-canonical-fixtures.mjs
+./apps/capture/node_modules/.bin/vitest --root apps/capture run test/canonical-session.test.ts
+```
+
+If the regen produces fixture diffs, commit them ALONGSIDE the source
+change so the diff carries the rationale. The fixture is the
+documentation of the production pipeline's contract.

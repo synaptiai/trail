@@ -150,3 +150,101 @@ describe("Layer 2 scan (criterion 6, 6a, 6b, 6c)", () => {
     expect(snippetHash("anything").length).toBe(8);
   });
 });
+
+// [gh#3 / 2026-05-18] Pure-hex shapes (git SHAs) bypass the
+// high-entropy-string rule in both Layer 1 (capture-time replacement)
+// and Layer 2 (write-time validation). Other catalog rules retain
+// their behavior. See `layer1.ts:isGitShaShape` for the rationale.
+describe("[gh#3] git-SHA shapes bypass high-entropy-string", () => {
+  const { patterns } = loadPatterns(undefined, { useCache: false });
+
+  test("AC#1 (Layer 1): pure-hex 40-char SHA is not redacted", () => {
+    const r = new Redactor(patterns);
+    const sha = "abc1234567890abcdef1234567890abcdef12345";
+    const out = r.redact(`commit ${sha} message`);
+    expect(out).toBe(`commit ${sha} message`);
+    expect(r.counts["high-entropy-string"] ?? 0).toBe(0);
+    expect(r.total).toBe(0);
+  });
+
+  test("AC#1 (Layer 2): pure-hex 40-char SHA produces no validation error", () => {
+    const sha = "abc1234567890abcdef1234567890abcdef12345";
+    const errors = scanLayer2(`commit ${sha}`, patterns);
+    const heFinding = errors.find((e) => e.pattern === "high-entropy-string");
+    expect(heFinding).toBeUndefined();
+  });
+
+  test("AC#2 (Layer 1): mixed-charset base64-shape still redacted", () => {
+    const r = new Redactor(patterns);
+    // 42 chars, mixed case alphanumeric — base64-shape, NOT pure hex.
+    const blob = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP";
+    const out = r.redact(`opaque ${blob} token`);
+    expect(out).toContain("[REDACTED:high-entropy-string]");
+    expect(r.counts["high-entropy-string"]).toBeGreaterThanOrEqual(1);
+  });
+
+  test("AC#2 (Layer 2): mixed-charset base64-shape still flagged", () => {
+    const blob = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP";
+    const errors = scanLayer2(`opaque ${blob} token`, patterns);
+    const heFinding = errors.find((e) => e.pattern === "high-entropy-string");
+    expect(heFinding).toBeDefined();
+  });
+
+  test("AC#5: short SHA (7-39 chars) is below high-entropy-string's 40-char floor and naturally ignored", () => {
+    // The high-entropy-string regex has a 40-char minimum length, so short
+    // SHAs are not matched in the first place — the new exclusion is only
+    // active for the 40-char boundary case. This test pins that the floor
+    // hasn't changed and the SHA exclusion doesn't paper over a regression
+    // in the minimum-length contract.
+    const r = new Redactor(patterns);
+    const shortSha = "abc1234"; // 7 chars
+    const out = r.redact(`see ${shortSha} for context`);
+    expect(out).toBe(`see ${shortSha} for context`);
+  });
+
+  test("anchored secret patterns with hex tails still match (no false negative on aws-secret-key)", () => {
+    // AC#3 says: a real hex-shaped secret SHOULD still be redacted if
+    // some other catalog rule has anchoring context. `aws-secret-key`
+    // requires the `aws_secret_access_key` prefix; the value is 40
+    // base64-shape chars. Verify the SHA exclusion does not skip
+    // matches from these anchored rules.
+    const r = new Redactor(patterns);
+    // 40-char pure-hex value with the aws prefix — must still redact.
+    const value = "abc1234567890abcdef1234567890abcdef12345";
+    const out = r.redact(`aws_secret_access_key=${value}`);
+    expect(out).toContain("[REDACTED:aws-secret-key]");
+    expect(out).not.toContain(value);
+  });
+
+  test("Layer 1 redactBoundary path also excludes git SHAs", () => {
+    // LLM-prompt egress (redactBoundary) must apply the same exclusion
+    // so SHA-bearing prompts don't get [REDACTED:high-entropy-string]
+    // markers that lose code-review fidelity at the LLM boundary.
+    const r = new Redactor(patterns);
+    const sha = "abc1234567890abcdef1234567890abcdef12345";
+    const out = r.redactBoundary(`see commit ${sha} for context`);
+    expect(out).toBe(`see commit ${sha} for context`);
+  });
+
+  test("multiple SHAs interspersed with a real high-entropy secret: SHAs pass, secret redacted", () => {
+    const r = new Redactor(patterns);
+    const sha1 = "abc1234567890abcdef1234567890abcdef12345";
+    const sha2 = "fed0987654321fedcba0987654321fedcba09876";
+    const realSecret = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP";
+    const input = `${sha1} log ${sha2} then key=${realSecret}`;
+    const out = r.redact(input);
+    expect(out).toContain(sha1);
+    expect(out).toContain(sha2);
+    expect(out).toContain("[REDACTED:high-entropy-string]");
+    expect(out).not.toContain(realSecret);
+    expect(r.counts["high-entropy-string"]).toBe(1);
+  });
+
+  test("AC#5: 40-char uppercase hex also excluded (case-insensitive SHA shape)", () => {
+    // git emits lowercase SHAs but humans paste both forms.
+    const r = new Redactor(patterns);
+    const upperSha = "ABC1234567890ABCDEF1234567890ABCDEF12345";
+    const out = r.redact(`commit ${upperSha} message`);
+    expect(out).toBe(`commit ${upperSha} message`);
+  });
+});
