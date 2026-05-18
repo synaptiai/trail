@@ -180,8 +180,44 @@ jobs:
         run: cargo check --locked
 
       - name: cargo test (workspace)
+        # Emits wire-snapshots to apps/ui/test-fixtures/wire-snapshots/
+        # via tests/ipc_dispatch_smoke.rs::dispatch_and_snapshot (gh#2 P1).
+        # The wire-roundtrip step below consumes these without needing an
+        # artifact transfer because we run in the same job.
         working-directory: apps/ui/src-tauri
         run: cargo test --locked
+
+      # ----- gh#2 Phase 1: wire-roundtrip bridge -----
+      #
+      # After cargo test emits wire snapshots, this step boots Node and
+      # runs the vitest wire-contract suite. The suite reads each snapshot,
+      # looks up the corresponding TS Zod schema in contract.ts, and
+      # asserts the schema accepts the Rust-serialized JSON. Closes the
+      # cross-language contract gap that caused v0.1.2 Bug 1 (Rust serde
+      # `null` rejected by TS `.optional()` → sidebar bricked on first
+      # paint). See docs/plans/gh-2-tauri-driver.md (Option E) for the
+      # full mechanism.
+      #
+      # Co-located in rust-quality (not a separate job) because the
+      # snapshots are emitted by cargo test in this same runner — no
+      # cross-job artifact transfer needed.
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies (for vitest wire-roundtrip)
+        run: pnpm install --frozen-lockfile
+
+      - name: Wire-roundtrip — Zod parses every Rust wire snapshot
+        run: pnpm --filter @trail/ui run test:wire-roundtrip
 
   secrets-scan:
     name: Secrets scan (redaction-pattern engine)

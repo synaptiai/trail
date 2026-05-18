@@ -88,10 +88,65 @@ mod cli_bridge;
 mod ipc;
 
 use serde_json::{json, Value};
+use std::path::PathBuf;
+use std::sync::Once;
 use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
 use tauri::WebviewWindow;
 use tauri::{ipc::CallbackFn, ipc::InvokeBody};
+
+// ---------------------------------------------------------------------------
+// Wire-snapshot emission — gh#2 Phase 1 / Option E.
+//
+// Each Ok-path test writes the deserialized response JSON to
+// `apps/ui/test-fixtures/wire-snapshots/<command>__<scenario>.json`. The TS
+// side (`apps/ui/src/ipc/__tests__/wire-roundtrip.test.ts`) reads each
+// snapshot and asserts the corresponding Zod schema from
+// `apps/ui/src/ipc/contract.ts::IPC_RESPONSE_SCHEMAS` parses it. This
+// bridges the two-language IPC contract through the SAME serializer
+// production uses, catching the v0.1.2 bug-1 class (Rust serialized
+// `null` → TS Zod `.optional()` rejected) without a WebDriver harness.
+//
+// Snapshots regenerate on every `cargo test --test ipc_dispatch_smoke` and
+// are gitignored. The first emit call per cargo invocation clears the
+// directory so stale snapshots from renamed/removed tests cannot mask
+// drift on the TS side. CARGO_MANIFEST_DIR is the canonical anchor for
+// the path (= apps/ui/src-tauri) so the resolution survives wherever
+// cargo is invoked from.
+// ---------------------------------------------------------------------------
+
+static CLEAR_ONCE: Once = Once::new();
+
+fn snapshots_dir() -> PathBuf {
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set under cargo");
+    PathBuf::from(manifest)
+        .join("..")
+        .join("test-fixtures")
+        .join("wire-snapshots")
+}
+
+fn ensure_snapshots_dir_clean() {
+    CLEAR_ONCE.call_once(|| {
+        let dir = snapshots_dir();
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).expect("clear wire-snapshots dir");
+        }
+        std::fs::create_dir_all(&dir).expect("create wire-snapshots dir");
+    });
+}
+
+/// Write `body` as pretty JSON to `wire-snapshots/<name>.json`. Called
+/// from each happy-path test after the response is deserialized; the TS
+/// side reads the file and asserts the Zod response schema parses it.
+fn emit_snapshot(name: &str, body: &Value) {
+    ensure_snapshots_dir_clean();
+    let dir = snapshots_dir();
+    let path = dir.join(format!("{name}.json"));
+    let json = serde_json::to_string_pretty(body).expect("serialize body");
+    std::fs::write(&path, json)
+        .unwrap_or_else(|e| panic!("write snapshot {} failed: {e}", path.display()));
+}
 
 /// Canonical valid ULID used across all schema-valid payloads. The Rust
 /// `validate_ulid` predicate (ipc.rs::validate_ulid) accepts 26 ASCII
@@ -214,6 +269,25 @@ fn dispatch_expect_resolved(
     res
 }
 
+/// Wrapper over `dispatch_expect_resolved` that also writes the response
+/// body (Ok or Err — both are JSON wire shapes the TS side must parse)
+/// to a snapshot file. Returns the original Result so callers can keep
+/// any assertions they already had.
+fn dispatch_and_snapshot(
+    window: &WebviewWindow<tauri::test::MockRuntime>,
+    cmd: &str,
+    payload: Value,
+    snapshot_name: &str,
+) -> Result<Value, Value> {
+    let res = dispatch_expect_resolved(window, cmd, payload);
+    let body = match &res {
+        Ok(v) => v,
+        Err(v) => v,
+    };
+    emit_snapshot(snapshot_name, body);
+    res
+}
+
 // ---------------------------------------------------------------------------
 // Happy-path dispatch tests — one per production IPC command.
 //
@@ -235,10 +309,11 @@ fn dispatch_expect_resolved(
 fn read_packet_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let _ = dispatch_expect_resolved(
+    let _ = dispatch_and_snapshot(
         &window,
         "read_packet",
         json!({ "args": { "packet_id": TEST_ULID } }),
+        "read_packet__not_found",
     );
 }
 
@@ -246,7 +321,7 @@ fn read_packet_dispatches_with_wrapped_args() {
 fn save_decision_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let _ = dispatch_expect_resolved(
+    let _ = dispatch_and_snapshot(
         &window,
         "save_decision",
         json!({
@@ -260,6 +335,7 @@ fn save_decision_dispatches_with_wrapped_args() {
                 "persona": "creator",
             }
         }),
+        "save_decision__not_found",
     );
 }
 
@@ -267,7 +343,7 @@ fn save_decision_dispatches_with_wrapped_args() {
 fn override_risk_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let _ = dispatch_expect_resolved(
+    let _ = dispatch_and_snapshot(
         &window,
         "override_risk",
         json!({
@@ -282,6 +358,7 @@ fn override_risk_dispatches_with_wrapped_args() {
                 "persona": "creator",
             }
         }),
+        "override_risk__not_found",
     );
 }
 
@@ -289,7 +366,7 @@ fn override_risk_dispatches_with_wrapped_args() {
 fn post_to_pr_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let _ = dispatch_expect_resolved(
+    let _ = dispatch_and_snapshot(
         &window,
         "post_to_pr",
         json!({
@@ -299,6 +376,7 @@ fn post_to_pr_dispatches_with_wrapped_args() {
                 "persona": "creator",
             }
         }),
+        "post_to_pr__not_found",
     );
 }
 
@@ -306,7 +384,7 @@ fn post_to_pr_dispatches_with_wrapped_args() {
 fn decide_on_pr_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let _ = dispatch_expect_resolved(
+    let _ = dispatch_and_snapshot(
         &window,
         "decide_on_pr",
         json!({
@@ -320,6 +398,7 @@ fn decide_on_pr_dispatches_with_wrapped_args() {
                 "persona": "creator",
             }
         }),
+        "decide_on_pr__not_found",
     );
 }
 
@@ -327,7 +406,7 @@ fn decide_on_pr_dispatches_with_wrapped_args() {
 fn query_trail_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let res = dispatch_expect_resolved(
+    let res = dispatch_and_snapshot(
         &window,
         "query_trail",
         json!({
@@ -337,6 +416,7 @@ fn query_trail_dispatches_with_wrapped_args() {
                 "cursor": null,
             }
         }),
+        "query_trail__empty",
     );
     // query_trail on a fresh empty DB returns Ok with an empty packets list;
     // pin that to give one positive end-to-end success in the suite.
@@ -394,10 +474,11 @@ fn query_trail_response_omits_next_cursor_when_none() {
 fn query_recent_sessions_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let res = dispatch_expect_resolved(
+    let res = dispatch_and_snapshot(
         &window,
         "query_recent_sessions",
         json!({ "args": { "limit": 5 } }),
+        "query_recent_sessions__empty",
     );
     // Empty DB → empty array, also Ok end-to-end.
     let body = res.expect("query_recent_sessions should succeed on an empty tempdir DB");
@@ -408,10 +489,11 @@ fn query_recent_sessions_dispatches_with_wrapped_args() {
 fn read_settings_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let res = dispatch_expect_resolved(
+    let res = dispatch_and_snapshot(
         &window,
         "read_settings",
         json!({ "args": {} }),
+        "read_settings__default",
     );
     // No settings.json on disk → Settings::default(); Ok end-to-end.
     let body = res.expect("read_settings should succeed when no settings file exists");
@@ -422,7 +504,7 @@ fn read_settings_dispatches_with_wrapped_args() {
 fn write_settings_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let res = dispatch_expect_resolved(
+    let res = dispatch_and_snapshot(
         &window,
         "write_settings",
         json!({
@@ -431,6 +513,7 @@ fn write_settings_dispatches_with_wrapped_args() {
                 "persona": "creator",
             }
         }),
+        "write_settings__theme_dark",
     );
     let body = res.expect("write_settings should succeed with a valid partial");
     assert_eq!(body.get("ok"), Some(&Value::Bool(true)));
@@ -440,7 +523,7 @@ fn write_settings_dispatches_with_wrapped_args() {
 fn preview_redacted_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let res = dispatch_expect_resolved(
+    let res = dispatch_and_snapshot(
         &window,
         "preview_redacted",
         json!({
@@ -449,6 +532,7 @@ fn preview_redacted_dispatches_with_wrapped_args() {
                 "redaction_id": "redact-1",
             }
         }),
+        "preview_redacted__not_found",
     );
     // Always returns Ok({ original: null }) per the B6 P1 contract.
     let body = res.expect("preview_redacted always succeeds for a valid ULID");
@@ -464,7 +548,7 @@ fn audit_log_append_dispatches_with_wrapped_args() {
     // `packets` table in the tempdir DB — that's a post-resolution domain
     // error, not a wire-shape regression, but skipping the FK keeps this
     // test's positive Ok assertion intact for the audit-log row write.
-    let res = dispatch_expect_resolved(
+    let res = dispatch_and_snapshot(
         &window,
         "audit_log_append",
         json!({
@@ -474,6 +558,7 @@ fn audit_log_append_dispatches_with_wrapped_args() {
                 "persona": "creator",
             }
         }),
+        "audit_log_append__ok",
     );
     let body = res.expect("audit_log_append should succeed for a valid event");
     assert_eq!(body.get("ok"), Some(&Value::Bool(true)));
@@ -483,10 +568,11 @@ fn audit_log_append_dispatches_with_wrapped_args() {
 fn subscribe_fs_watch_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let res = dispatch_expect_resolved(
+    let res = dispatch_and_snapshot(
         &window,
         "subscribe_fs_watch",
         json!({ "args": {} }),
+        "subscribe_fs_watch__ok",
     );
     let body = res.expect("subscribe_fs_watch is unconditionally Ok in v0.1");
     assert_eq!(body.get("ok"), Some(&Value::Bool(true)));
@@ -496,10 +582,11 @@ fn subscribe_fs_watch_dispatches_with_wrapped_args() {
 fn subscribe_settings_change_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let _ = dispatch_expect_resolved(
+    let _ = dispatch_and_snapshot(
         &window,
         "subscribe_settings_change",
         json!({ "args": {} }),
+        "subscribe_settings_change__not_implemented",
     );
     // Handler returns IpcError::Internal("not yet implemented (Sprint 6)") —
     // that's POST-resolution, which is the contract this test pins. The
@@ -510,7 +597,7 @@ fn subscribe_settings_change_dispatches_with_wrapped_args() {
 fn validate_capture_cli_path_dispatches_with_wrapped_args() {
     let (app, _tmp) = boot_app_with_handlers();
     let window = build_window(&app);
-    let _ = dispatch_expect_resolved(
+    let _ = dispatch_and_snapshot(
         &window,
         "validate_capture_cli_path",
         json!({
@@ -518,6 +605,7 @@ fn validate_capture_cli_path_dispatches_with_wrapped_args() {
                 "path": "/usr/local/bin/trail-capture",
             }
         }),
+        "validate_capture_cli_path__probe",
     );
     // Will Ok-with-False (binary not present in CI) or Ok-with-True
     // (lucky tempdir hit) — either way, POST-resolution; the helper

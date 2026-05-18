@@ -89,6 +89,85 @@ jobs:
         run: pnpm --filter @trail/ui exec tauri info
 
   # ─────────────────────────────────────────────────────────────────────
+  # 1b. Wire-roundtrip advisory smoke (gh#2 Phase 2)
+  #
+  # Re-runs the Rust ↔ TS IPC wire-shape bridge as a release-time check.
+  # The same gate runs on every PR via ui-quality-gates.yml; this is the
+  # belt-and-braces case where a tag was pushed without going through PR
+  # review (e.g., maintainer pushed directly to main + tagged).
+  #
+  # Marked `continue-on-error: true` — advisory only. A failure surfaces
+  # red in the release-pipeline visualization but does NOT block draft
+  # creation or npm publish. Promote to required (drop continue-on-error)
+  # after ≥2 green releases prove the harness is stable. Decision rationale
+  # in docs/plans/gh-2-tauri-driver.md.
+  # ─────────────────────────────────────────────────────────────────────
+  wire-roundtrip-smoke:
+    name: Wire-roundtrip (Rust ↔ TS, advisory)
+    needs: validate-config
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/ui/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/ui/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install Tauri Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            patchelf
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@e9540b3eafaf84907c087a645d3258bfaa861427  # v3.0.0
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate design tokens
+        # codegen-tokens.mjs must run before any TS compile; the
+        # wire-contract test imports from src/ipc/contract.ts which
+        # transitively pulls in the design system surface.
+        run: pnpm --filter @trail/ui run tokens:gen
+
+      - name: cargo test (emits wire snapshots)
+        working-directory: apps/ui/src-tauri
+        run: cargo test --test ipc_dispatch_smoke --locked
+
+      - name: Wire-roundtrip — Zod parses every Rust wire snapshot
+        run: pnpm --filter @trail/ui run test:wire-roundtrip
+
+  # ─────────────────────────────────────────────────────────────────────
   # 2. Create the draft GitHub Release once (tag push only)
   # ─────────────────────────────────────────────────────────────────────
   create-draft-release:
