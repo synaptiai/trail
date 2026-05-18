@@ -1,15 +1,17 @@
-# `apps/capture/bin/` — auto-synced from canonical
+# `apps/capture/bin/` — auto-synced from canonical (gitignored)
 
-The `.yml` files in this directory are **build artefacts**. They are
-copied from the repo-root `bin/` directory (which is the canonical
-source, also consumed by `py-reference/cli/trail.py`) on every
-invocation of `pnpm --filter @synapti/trail-capture build` (`prebuild` hook)
-and on every test run (`pretest` hook).
+The `.yml` files in this directory are **build artefacts** and are NOT
+committed. They are gitignored (`apps/capture/bin/*.yml` in repo-root
+`.gitignore`) and regenerated from the canonical `bin/` directory (which
+is the canonical source, also consumed by `py-reference/cli/trail.py`)
+on every invocation of `pnpm --filter @synapti/trail-capture build`
+(`prebuild` hook) and on every test run (`pretest` hook).
 
 ## Do NOT edit these files directly
 
 Edits made here will be **silently overwritten** the next time `build`,
-`test`, or `sync-bundled-yaml` runs.
+`test`, or `sync-bundled-yaml` runs. They will also fail to commit (the
+path is gitignored).
 
 To change a bundled pattern set (or test-runners catalog):
 
@@ -24,14 +26,21 @@ To change a bundled pattern set (or test-runners catalog):
 
 ## Why two copies?
 
-Historical: the package needs the YAML colocated for the published npm
-bundle (`files: ["dist", "bin", ...]` in `package.json`). The repo-root
-copy is colocated with the schema and py-reference for the
-cross-language workflow.
+The package needs the YAML colocated for the published npm bundle
+(`files: ["dist", "bin", ...]` in `package.json`). The repo-root copy is
+colocated with the schema and py-reference for the cross-language
+workflow. Only the canonical (repo-root) copy is committed; this
+directory's `.yml` files are generated.
 
 The build script (`scripts/copy-bin.mjs`) syncs canonical → package
-in stage 1, then package → `dist/bin/` in stage 2. The byte-equality
-test in `patterns-load.test.ts` (F19 / 2026-05-09) catches any future
-attempt to bypass the sync and edit only one copy.
+in stage 1, then package → `dist/bin/` in stage 2. Two test gates
+defend the invariant:
 
-See spec §10 + cycle-2 review F19 for the rationale.
+- `patterns-load.test.ts` (F19 / 2026-05-09) — byte-equality between the
+  canonical and (regenerated) package copies. Catches drift if the
+  build script's stage 1 has a regression.
+- `patterns-load.test.ts` (gh#9 / 2026-05-18) — `git ls-files` returns
+  exactly one tracked YAML path per filename. Catches reintroduction of
+  a second committed copy.
+
+See spec §10, cycle-2 review F19, and gh#9 for the rationale.
