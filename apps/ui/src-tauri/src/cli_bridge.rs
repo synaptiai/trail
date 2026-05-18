@@ -619,29 +619,37 @@ mod tests {
         use std::fs::{self, File};
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("trail-cli-bridge-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).expect("create_dir_all");
-        // Use a per-test file name so concurrent tests don't collide.
-        // Counter is process-local; each test gets a fresh script.
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = dir.join(format!("script-{n}.sh"));
+        // Per-call tempdir avoids ETXTBSY ("Text file busy", errno 26)
+        // observed on Linux CI when parallel cargo test threads exec
+        // scripts within a SHARED parent dir. The earlier sibling-thread
+        // workaround (atomic SEQ + per-process dir + sync_all + scope drop)
+        // was insufficient: ETXTBSY can still fire when a sibling thread
+        // holds a writeable FD that the kernel hasn't flushed from the
+        // dir's open-file table at the moment of fork+exec. Per-call
+        // tempdir eliminates the shared-parent-dir vector entirely —
+        // each test's script.sh lives in its own randomly-named dir.
+        // Observed in CI run 26027652183 (gh#2 Phase 1 land) and historic
+        // PR #21 cycle-1 run 25613777334.
+        let dir = tempfile::Builder::new()
+            .prefix("trail-cli-bridge-test-")
+            .tempdir()
+            .expect("tempdir");
+        let path = dir.path().join("script.sh");
         {
             let mut f = File::create(&path).expect("create script");
             writeln!(f, "#!/bin/sh").unwrap();
             f.write_all(body.as_bytes()).unwrap();
             f.write_all(b"\n").unwrap();
             f.sync_all().expect("sync_all");
-            // Explicit scope-drop closes the file handle before we set
-            // execute permissions and spawn. Without this, parallel cargo
-            // test threads can hit ETXTBSY ("Text file busy") when a
-            // sibling test attempts to exec the script while THIS thread's
-            // File handle is still open. Observed flake: PR #21 cycle-1
-            // CI run 25613777334.
         }
         let mut perms = fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&path, perms).unwrap();
+        // Leak the tempdir handle so the script outlives this function;
+        // probe_capture_version below must exec the path. The OS reaps
+        // /tmp on next boot — cost is bounded by the cli_bridge test
+        // count (<10), and CI runners are ephemeral.
+        std::mem::forget(dir);
         path
     }
 
