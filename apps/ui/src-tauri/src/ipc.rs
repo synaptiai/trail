@@ -1461,6 +1461,15 @@ pub async fn validate_capture_cli_path(
 #[derive(Deserialize)]
 pub struct SeedStressPacketsArgs {
     pub count: u32,
+    // v0.1.x gh#8 criterion (iii) defence-in-depth: persona-gate the
+    // state-mutation IPC at the handler body, not only via the
+    // compile-out `cfg`. A dev or `--features test-fixtures` build DOES
+    // register this handler; the cfg alone does not protect those
+    // builds from an auditor-mode DevTools session invoking the IPC
+    // via `__TAURI_INTERNALS__.invoke(...)`. Mirrors the C15 sweep
+    // applied to save_decision / override_risk / post_to_pr /
+    // decide_on_pr / write_settings.
+    pub persona: Persona,
 }
 
 #[cfg(any(debug_assertions, feature = "test-fixtures"))]
@@ -1469,6 +1478,13 @@ pub async fn seed_stress_packets(
     args: SeedStressPacketsArgs,
     state: State<'_, DbState>,
 ) -> IpcResult<OkResponse> {
+    // v0.1.x gh#8 criterion (iii): handler-body auditor rejection.
+    // The release build never reaches this code (cfg compiles the
+    // handler out). On dev / test-fixtures builds, the typed
+    // PersonaForbidden rejection at handler entry prevents an
+    // auditor-mode renderer from seeding 1000 fake packets via
+    // DevTools. b9_seed_stress_* tests below pin the contract.
+    reject_auditor(args.persona, "seed_stress_packets")?;
     if args.count == 0 || args.count > 5_000 {
         return Err(IpcError::InvalidArguments {
             field: "count".into(),
@@ -1752,6 +1768,40 @@ mod tests {
     #[test]
     fn c15_reject_auditor_accepts_reviewer() {
         let r = reject_auditor(Persona::Reviewer, "decide_on_pr");
+        assert!(r.is_ok(), "reviewer must be allowed");
+    }
+
+    // v0.1.x gh#8 criterion (iv): persona-rejection pins for the
+    // dev/test-fixtures seed_stress_packets IPC. These tests cover the
+    // contract layer (reject_auditor returns PersonaForbidden for the
+    // exact command string used at the handler entry). The handler
+    // itself is `#[cfg(any(debug_assertions, feature = "test-fixtures"))]`
+    // so the rejection only matters on dev/E2E builds — production
+    // release builds compile the symbol out entirely. The b9 prefix
+    // matches the v0.1.1 review B9 finding that originally tracked
+    // this defence-in-depth gap.
+    #[test]
+    fn b9_seed_stress_packets_rejects_auditor() {
+        let r = reject_auditor(Persona::Auditor, "seed_stress_packets");
+        assert!(r.is_err(), "auditor must be rejected");
+        match r.unwrap_err() {
+            IpcError::PersonaForbidden { persona, command } => {
+                assert_eq!(persona, "auditor");
+                assert_eq!(command, "seed_stress_packets");
+            }
+            other => panic!("expected PersonaForbidden, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn b9_seed_stress_packets_accepts_creator() {
+        let r = reject_auditor(Persona::Creator, "seed_stress_packets");
+        assert!(r.is_ok(), "creator must be allowed");
+    }
+
+    #[test]
+    fn b9_seed_stress_packets_accepts_reviewer() {
+        let r = reject_auditor(Persona::Reviewer, "seed_stress_packets");
         assert!(r.is_ok(), "reviewer must be allowed");
     }
 
