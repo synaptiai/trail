@@ -14,7 +14,7 @@
  * visibility downstream), not just "the function returned an object".
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -340,7 +340,14 @@ describe('parsePacketYaml — canonical fixture (real Phase 1 emission)', () => 
     '../../../../../py-reference/fixtures/sessions/18e374b5-4eb9-424d-a3ff-a639d1c6fada/packet-1.yml',
   );
 
-  it('loads + validates the canonical 700KB fixture', () => {
+  // py-reference/ is internal-only (excluded from the public mirror per
+  // scripts/sync-to-public.sh). When running CI on synaptiai/trail (public),
+  // the fixture is absent and this test should skip rather than fail.
+  // Locally and in trail-internal CI, the fixture exists and the assertion
+  // runs end-to-end. The `it` becomes `it.skipIf` based on filesystem state.
+  const FIXTURE_EXISTS = existsSync(FIXTURE_PATH);
+
+  it.skipIf(!FIXTURE_EXISTS)('loads + validates the canonical 700KB fixture', () => {
     const text = readFileSync(FIXTURE_PATH, 'utf8');
     const loaded = parsePacketYaml(text, FIXTURE_PATH);
     expect(loaded.header.packet_id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
