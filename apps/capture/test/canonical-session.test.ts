@@ -44,7 +44,10 @@ describe("[gh#4] canonical packet fixtures byte-equality", () => {
   const staging = stageParityFixture(SESSION_ID);
   afterAll(staging.cleanup);
 
-  async function runCapture(perDiff: boolean, format: "both" | "yaml"): Promise<{
+  async function runCapture(
+    perDiff: boolean,
+    format: "both" | "yaml"
+  ): Promise<{
     yamlPath?: string | null;
     mdPath?: string | null;
   }> {
