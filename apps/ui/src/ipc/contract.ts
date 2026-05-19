@@ -518,6 +518,18 @@ export const IPC_COMMAND_SCHEMAS = {
   subscribe_settings_change: z.object({}),
   validate_capture_cli_path: ValidateCaptureCliPathArgs,
   detect_capture_cli: DetectCaptureCliArgs,
+  list_claude_sessions: z.object({}),
+  spawn_packet_generate: z.object({
+    session_id: z.string().min(1).max(64),
+    // SEC-1: persona threading required so the Rust handler can
+    // reject_auditor at the IPC boundary. Mirrors save_decision /
+    // override_risk / post_to_pr / decide_on_pr / write_settings.
+    persona: personaSchema,
+  }),
+  cancel_packet_generate: z.object({
+    spawn_id: z.string().min(1),
+    persona: personaSchema,
+  }),
 } as const;
 
 export type IpcCommandName = keyof typeof IPC_COMMAND_SCHEMAS;
@@ -706,6 +718,80 @@ export const detectCaptureCliResponseSchema = z.discriminatedUnion('kind', [
 export type DetectCaptureCliResponse = z.infer<typeof detectCaptureCliResponseSchema>;
 
 /**
+ * gh#18 AC#3 — list_claude_sessions response.
+ *
+ * Discriminated `kind` union: `ok` carries the session list, `failed` carries
+ * a classified failure surface so the Capture surface can render an
+ * explanation card instead of a toast.
+ */
+export const claudeSessionSchema = z.object({
+  session_id: z.string().min(1),
+  project_path: z.string().min(1),
+  started_at: z.string().nullable(),
+  message_count: z.number().int().nonnegative(),
+  packet_id: z.string().nullable(),
+});
+
+export const listClaudeSessionsResponseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    sessions: z.array(claudeSessionSchema),
+  }),
+  z.object({
+    kind: z.literal('failed'),
+    failure_kind: z.enum([
+      'projects-dir-not-found',
+      'projects-dir-unreadable',
+      'enumeration-error',
+    ]),
+    message: z.string(),
+  }),
+]);
+
+export type ClaudeSession = z.infer<typeof claudeSessionSchema>;
+export type ListClaudeSessionsResponse = z.infer<typeof listClaudeSessionsResponseSchema>;
+
+/**
+ * gh#18 AC#5/6 — spawn_packet_generate response.
+ *
+ * `spawned` carries an opaque spawn_id used both to correlate progress
+ * events and to cancel the spawn via `cancel_packet_generate`. The
+ * `failed` branch carries a classifier so the row can render the right
+ * affordance (CLI not found → suggest Re-detect; spawn-error → "try
+ * again"; invalid-session-id → "this should not happen, please file").
+ */
+export const spawnPacketGenerateResponseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('spawned'),
+    spawn_id: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('failed'),
+    failure_kind: z.enum([
+      'cli-not-found',
+      'spawn-error',
+      'invalid-session-id',
+    ]),
+    message: z.string(),
+  }),
+]);
+
+/**
+ * gh#18 AC#5/6 — cancel_packet_generate response. Always succeeds at the
+ * wire level; the `cancelled` field reports whether a matching spawn was
+ * actually found in the registry.
+ */
+export const cancelPacketGenerateResponseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    cancelled: z.boolean(),
+  }),
+]);
+
+export type SpawnPacketGenerateResponse = z.infer<typeof spawnPacketGenerateResponseSchema>;
+export type CancelPacketGenerateResponse = z.infer<typeof cancelPacketGenerateResponseSchema>;
+
+/**
  * Map command-name → response schema (zod). Commands not in the map skip
  * post-invoke validation; this is honest about the Sprint 1 state where
  * many handlers return placeholder errors.
@@ -736,6 +822,9 @@ export const IPC_RESPONSE_SCHEMAS: Partial<Record<IpcCommandName, z.ZodTypeAny>>
   subscribe_settings_change: okResponseSchema,
   validate_capture_cli_path: validateCaptureCliPathResponseSchema,
   detect_capture_cli: detectCaptureCliResponseSchema,
+  list_claude_sessions: listClaudeSessionsResponseSchema,
+  spawn_packet_generate: spawnPacketGenerateResponseSchema,
+  cancel_packet_generate: cancelPacketGenerateResponseSchema,
 };
 
 // ---------------------------------------------------------------------------
@@ -756,7 +845,21 @@ export type IpcEventName =
    * while the desktop continued to run. The UI listens for this and
    * surfaces a banner so the operator knows the watcher is offline.
    */
-  | 'watcher-degraded';
+  | 'watcher-degraded'
+  /**
+   * gh#18 A2 — emitted by the `~/.claude/projects/` watcher when any
+   * debounced filesystem event fires. The Rust side coalesces the
+   * batch into a single empty-payload event; the React layer refetches
+   * `list_claude_sessions` on each.
+   */
+  | 'claude-session-changed'
+  /**
+   * gh#18 A3 — per-line streaming progress for `trail packet generate`
+   * subprocess. Emitted by `spawn::run_packet_generate`. Terminal
+   * variants `done` / `error` are followed by no further events for that
+   * spawn_id.
+   */
+  | 'packet-generate-progress';
 
 export type IpcEvent =
   | { name: 'packet-changed'; payload: { packet_id: string } }
@@ -786,4 +889,30 @@ export type IpcEvent =
       name: 'post-progress';
       payload: { stage: 'auth-check' | 'destination-confirm' | 'posting' | 'done' | 'failed'; packet_id: string };
     }
-  | { name: 'watcher-degraded'; payload: { messages: string[] } };
+  | { name: 'watcher-degraded'; payload: { messages: string[] } }
+  | { name: 'claude-session-changed'; payload: Record<string, never> }
+  | {
+      name: 'packet-generate-progress';
+      payload: {
+        spawn_id: string;
+        session_id: string;
+        kind: 'stderr' | 'done' | 'error';
+        chunk?: string;
+        exit_code?: number;
+        error_detail?: string;
+      };
+    };
+
+/** gh#18 A2 — payload shape for `claude-session-changed`. Empty by design;
+ * the React layer refetches `list_claude_sessions` on each event. */
+export type ClaudeSessionChangedPayload = Record<string, never>;
+
+/** gh#18 A3 — payload shape for `packet-generate-progress`. */
+export interface PacketGenerateProgressPayload {
+  spawn_id: string;
+  session_id: string;
+  kind: 'stderr' | 'done' | 'error';
+  chunk?: string;
+  exit_code?: number;
+  error_detail?: string;
+}

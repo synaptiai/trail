@@ -26,7 +26,7 @@ describe('<M6SettingsModal>', () => {
     render(<M6SettingsModal open onClose={() => {}} initialSettings={fixture} persona="creator" />);
     expect(screen.getByRole('tab', { name: 'General' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Redaction' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Capture' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Capture (advanced)' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Pinned sessions' })).toBeInTheDocument();
   });
 

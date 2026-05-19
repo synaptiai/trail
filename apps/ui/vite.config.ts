@@ -29,6 +29,16 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src'),
     },
   },
+  // esbuild 0.28's dev-time dep-scan default target includes old browsers
+  // (chrome87/firefox78) whose downlevel transformers can't handle modern
+  // destructuring in some deps (drizzle-orm, shiki, ajv). Pin the dep-
+  // optimization target to match the production build target so the dev
+  // server starts up cleanly on a fresh install.
+  optimizeDeps: {
+    esbuildOptions: {
+      target: 'es2022',
+    },
+  },
   build: {
     target: 'es2022',
     sourcemap: true,

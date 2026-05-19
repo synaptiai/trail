@@ -1,0 +1,408 @@
+/*
+ * <CaptureSurface> — gh#18 Capture/sessions view.
+ *
+ * var(--size-editorial-column) editorial column matching the design handoff's Reading view.
+ * Sharp var(--border-width-thick) corners, Newsreader-free (this is a listing surface, not a
+ * packet surface — section labels use Public Sans body-sm, mono is
+ * reserved for session IDs + CLI paths).
+ *
+ * Color discipline: single-pigment focus (copper for active/running,
+ * sage for ok, oxblood for err). Everything else greyscale.
+ */
+
+.capture-surface {
+  --column-width: var(--size-editorial-column);
+  width: 100%;
+  min-height: 100%;
+  padding: var(--space-6) var(--size-glyph-lg) var(--space-8);
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+}
+
+.capture-surface__col {
+  width: 100%;
+  max-width: var(--column-width);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.capture-surface__eyebrow {
+  margin: 0 0 var(--space-6);
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.capture-surface__cli-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: var(--space-4) 0 var(--space-5);
+  border-top: var(--border-width-hairline) solid var(--copper-700);
+  border-top-width: var(--border-width-hairline);
+}
+
+.capture-surface__cli-msg {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-ui);
+  color: var(--text-primary);
+}
+
+.capture-surface__cli-msg--err {
+  color: var(--risk-high);
+}
+
+.capture-surface__glyph {
+  display: inline-block;
+  width: var(--size-icon-md);
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.capture-surface__glyph--ok {
+  color: var(--risk-low);
+}
+
+.capture-surface__glyph--err {
+  color: var(--risk-high);
+}
+
+.capture-surface__path {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  padding: 0;
+}
+
+.capture-surface__sep {
+  border: none;
+  border-top: var(--border-width-hairline) solid var(--ink-800);
+  margin: var(--space-6) 0;
+}
+
+.capture-surface__section-label {
+  margin: 0 0 var(--space-5);
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.capture-surface__loading,
+.capture-surface__empty {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-ui);
+  color: var(--text-tertiary);
+  margin: 0;
+  padding: 0;
+  line-height: 1.5;
+}
+
+.capture-surface__empty code {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-secondary);
+}
+
+.capture-surface__err {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-ui);
+  color: var(--risk-high);
+  margin: 0;
+}
+
+.capture-surface__sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Per-row layout:
+ *   [01] [session-id]                      [42 msg · 2h ago]
+ *        project/path                       [Action chip]
+ */
+.capture-row {
+  display: grid;
+  grid-template-columns: var(--space-6) 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: baseline;
+  column-gap: var(--size-icon-md);
+  row-gap: var(--space-2);
+  padding: var(--size-icon-md) 0;
+  border-bottom: var(--border-width-hairline) solid var(--ink-800);
+  transition: background 160ms ease;
+}
+
+.capture-row[data-running='true'] {
+  border-left: var(--border-width-thick) solid var(--copper-500);
+  padding-left: var(--space-4);
+  margin-left: calc(-1 * var(--font-size-ui));
+}
+
+.capture-row__index {
+  grid-column: 1;
+  grid-row: 1;
+  font-family: var(--font-serif, serif);
+  font-size: var(--space-5);
+  color: var(--text-tertiary);
+}
+
+.capture-row__id {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-primary);
+}
+
+.capture-row__meta {
+  grid-column: 3;
+  grid-row: 1;
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-tertiary);
+}
+
+.capture-row__project {
+  grid-column: 2;
+  grid-row: 2;
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-secondary);
+}
+
+.capture-row__action {
+  grid-column: 3;
+  grid-row: 2;
+  justify-self: end;
+}
+
+.capture-row__status {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  color: var(--copper-400);
+  letter-spacing: 0.02em;
+  margin-right: var(--space-4);
+}
+
+/* B5 — Live event log under a generating session row. Inlined into the
+   row's grid (full-width via grid-column: 1 / -1) rather than a separate
+   sheet primitive; matches the design handoff's "Live · Watching" event
+   thread pattern. */
+.capture-row__log {
+  grid-column: 1 / -1;
+  margin-top: var(--space-4);
+  padding: var(--space-4) var(--size-icon-md);
+  background: rgba(255, 255, 255, 0.02);
+  border-left: var(--border-width-thick) solid var(--copper-500);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: var(--size-sidebar);
+  overflow-y: auto;
+}
+
+.capture-row__log-line {
+  display: grid;
+  grid-template-columns: var(--size-icon-md) 1fr;
+  gap: var(--space-3);
+  align-items: baseline;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--space-4);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.capture-row__log-line[data-kind='done'] {
+  color: var(--risk-low);
+}
+
+.capture-row__log-line[data-kind='error'] {
+  color: var(--risk-high);
+}
+
+.capture-row__log-glyph {
+  color: var(--text-tertiary);
+}
+
+.capture-row__log-line[data-kind='done'] .capture-row__log-glyph {
+  color: var(--risk-low);
+}
+
+.capture-row__log-line[data-kind='error'] .capture-row__log-glyph {
+  color: var(--risk-high);
+}
+
+.capture-row__log-text {
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Trail packets list — flat single-line rows. The packet view is the
+   long-form artefact, so this list is a navigation index. */
+.capture-surface__packets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.capture-packet {
+  border-bottom: var(--border-width-hairline) solid var(--ink-800);
+}
+
+.capture-packet__open {
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: var(--font-size-ui) 0;
+  display: grid;
+  grid-template-columns: var(--size-icon-md) auto 1fr auto;
+  align-items: baseline;
+  column-gap: var(--size-icon-md);
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.capture-packet__open:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.capture-packet__arrow {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-ui);
+}
+
+.capture-packet__id {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-primary);
+}
+
+.capture-packet__name {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-ui);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-packet__age {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-tertiary);
+}
+
+/* B6 — First-launch editorial state. Hero copy + 3-step setup grid
+   modeled on the design handoff's FirstRun artboard pattern. */
+.capture-surface--first-launch {
+  padding-top: var(--space-8);
+}
+
+.capture-surface__title {
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: var(--font-size-display-1);
+  font-weight: 400;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--space-6);
+  color: var(--text-primary);
+  max-width: 18em;
+}
+
+.capture-surface__lede {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--size-icon-md);
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-3);
+  max-width: 36em;
+}
+
+.capture-surface__steps {
+  list-style: none;
+  margin: 0 0 var(--space-6);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.capture-step {
+  display: grid;
+  grid-template-columns: var(--size-icon-xl) 1fr auto;
+  column-gap: var(--space-5);
+  padding: var(--space-5) 0;
+  border-bottom: var(--border-width-hairline) solid var(--ink-800);
+  align-items: baseline;
+}
+
+.capture-step__num {
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: var(--font-size-h1);
+  color: var(--text-tertiary);
+}
+
+.capture-step[data-done='true'] .capture-step__num {
+  color: var(--risk-low);
+}
+
+.capture-step__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.capture-step__title {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body);
+  color: var(--text-primary);
+}
+
+.capture-step__hint {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.capture-step__hint code {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--space-4);
+  color: var(--text-secondary);
+}
+
+.capture-step__status {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+
+.capture-step[data-done='true'] .capture-step__status {
+  color: var(--risk-low);
+}
+
+.capture-surface__footnote {
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-tertiary);
+  margin: 0;
+  line-height: 1.5;
+}

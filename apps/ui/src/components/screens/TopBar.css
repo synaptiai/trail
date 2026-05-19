@@ -17,3 +17,35 @@
 }
 
 .topbar__hint { color: var(--text-tertiary); }
+
+/* gh#18 C2 — breadcrumb. Lives inside .topbar__brand to share the
+   left-cluster baseline with the brand mark. */
+.topbar__breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-ui, system-ui);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-secondary);
+}
+
+.topbar__breadcrumb-sep {
+  margin: 0 var(--space-3);
+  color: var(--text-tertiary);
+}
+
+.topbar__breadcrumb-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--text-tertiary);
+  text-underline-offset: var(--size-underline-offset);
+}
+
+.topbar__breadcrumb-link:hover {
+  color: var(--text-primary);
+  text-decoration-color: var(--text-primary);
+}

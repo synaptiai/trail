@@ -8,8 +8,10 @@ mod db;
 mod ipc;
 mod migrations;
 mod saga;
+mod sessions;
 mod settings;
 mod shell_allowlist;
+mod spawn;
 mod watcher;
 mod yaml_safety;
 
@@ -89,12 +91,31 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .manage(db::DbState::new(conn))
         .manage(saga_state)
+        .manage(spawn::SpawnRegistry::new())
+        // v0.2 P2-F4: shared mtime cache for `read_jsonl_metadata`. The
+        // `list_claude_sessions` IPC handler resolves this from State on
+        // every call so the watcher-fired refetch path serves stable
+        // sessions from cache instead of re-reading 100MB+ files.
+        //
+        // Wrapped in `Arc` (asymmetric with `SpawnRegistry` above which
+        // is `.manage()`d raw) because the IPC handler needs to *move*
+        // the cache into `tauri::async_runtime::spawn_blocking` — that
+        // requires `'static + Send` ownership, which `tauri::State<>`
+        // borrows can't satisfy. `SpawnRegistry` is only borrowed via
+        // `State<>` references inside async handlers, never moved into
+        // a blocking task, so it doesn't need the Arc wrap.
+        .manage(std::sync::Arc::new(sessions::JsonlMetadataCache::new()))
         .setup(|app| {
             // Sprint 4 (gh#11 criterion 3): spawn the filesystem watcher on
             // app setup so the desktop is reactive to external edits from
             // boot. The watcher emits Tauri events; the frontend listens
             // via `@tauri-apps/api/event#listen`.
             spawn_fs_watcher(app.handle().clone());
+            // gh#18 AC#3 (A2): spawn a SECOND watcher on
+            // ~/.claude/projects/ so the Capture surface sees new sessions
+            // appear in real time. Emits `claude-session-changed`; the
+            // React layer refetches list_claude_sessions on each event.
+            spawn_claude_sessions_watcher(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -113,11 +134,35 @@ fn main() {
             ipc::subscribe_settings_change,
             ipc::validate_capture_cli_path,
             ipc::detect_capture_cli,
+            ipc::list_claude_sessions,
+            ipc::spawn_packet_generate,
+            ipc::cancel_packet_generate,
             #[cfg(any(debug_assertions, feature = "test-fixtures"))]
             ipc::seed_stress_packets,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // v0.2 P2-SEC-3: on app exit, cancel any in-flight
+            // `trail packet generate` spawns so children don't orphan.
+            // Worker threads poll the cancel flag every 50ms and call
+            // `child.kill()` in their cancel branch — bounded-delay
+            // cleanup, but better than the prior unconditional orphan
+            // on force-quit. Use `RunEvent::ExitRequested` rather than
+            // `Exit` so the cancel races with the actual process tear-
+            // down (which happens after this handler returns).
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let registry = app_handle.state::<spawn::SpawnRegistry>();
+                let drained = registry.cancel_all();
+                if drained > 0 {
+                    info!(
+                        target: "trail::shutdown",
+                        count = drained,
+                        "cancelled active packet-generate spawns on app exit"
+                    );
+                }
+            }
+        });
 }
 
 // Cycle-2 C9 (PR #21): cross-language IPC drift pin.
@@ -149,8 +194,10 @@ fn main() {
 #[allow(dead_code)]
 const PINNED_IPC_HANDLERS: &[&str] = &[
     "audit_log_append",
+    "cancel_packet_generate",
     "decide_on_pr",
     "detect_capture_cli",
+    "list_claude_sessions",
     "override_risk",
     "post_to_pr",
     "preview_redacted",
@@ -159,6 +206,7 @@ const PINNED_IPC_HANDLERS: &[&str] = &[
     "read_packet",
     "read_settings",
     "save_decision",
+    "spawn_packet_generate",
     "subscribe_fs_watch",
     "subscribe_settings_change",
     "validate_capture_cli_path",
@@ -606,6 +654,7 @@ fn spawn_fs_watcher<R: tauri::Runtime>(handle: tauri::AppHandle<R>) {
     let handle_for_error = handle.clone();
     let result = watcher::spawn_watcher(
         &sessions_dir,
+        "trail-fs-watcher",
         move |paths| {
             let h = handle_clone.clone();
             // v0.1.1 B6: route each path through `watcher::evaluate_change`
@@ -636,15 +685,34 @@ fn spawn_fs_watcher<R: tauri::Runtime>(handle: tauri::AppHandle<R>) {
         },
     );
     match result {
-        Ok(handle) => {
+        Ok(handle_ok) => {
             // Hold the handle for the app lifetime — drop terminates
             // the watcher. We `Box::leak` so the handle never drops
             // (acceptable for a singleton at app boot).
-            Box::leak(Box::new(handle));
+            Box::leak(Box::new(handle_ok));
             info!(target: "trail::watcher", path = %sessions_dir.display(), "watcher started");
         }
         Err(e) => {
             error!(target: "trail::watcher", error = %e, "spawn_watcher failed");
+            // v0.2 P2-F7: surface startup failure to the UI so the
+            // operator sees the offline state instead of an empty
+            // sidebar that looks like "no packets yet." Symmetric with
+            // the runtime on_error branch above. If the emit itself
+            // fails (renderer not yet attached during early boot), log
+            // at warn so the visibility gap is captured (the
+            // underlying spawn err is already on the error line above).
+            if let Err(emit_err) = handle.emit(
+                "watcher-degraded",
+                serde_json::json!({
+                    "messages": vec![format!("fs watcher startup: {e}")],
+                }),
+            ) {
+                warn!(
+                    target: "trail::watcher",
+                    error = %emit_err,
+                    "could not surface watcher-degraded banner to UI"
+                );
+            }
         }
     }
 }
@@ -796,6 +864,93 @@ fn dispatch_watcher_event<R: tauri::Runtime>(
                     "mismatch_type": "missing",
                 }),
             );
+        }
+    }
+}
+
+/// gh#18 A2 — second watcher on `~/.claude/projects/`.
+///
+/// Reuses `watcher::spawn_watcher` (recursive notify-debouncer-full) with a
+/// simpler dispatch loop: every debounced path triggers a single
+/// `claude-session-changed` event. No decision classifier — the React layer
+/// refetches `list_claude_sessions` on each event.
+///
+/// Skips silently when `~/.claude/projects/` doesn't exist (Claude Code never
+/// installed). The Capture surface's empty-state branch covers that case.
+fn spawn_claude_sessions_watcher<R: tauri::Runtime>(handle: tauri::AppHandle<R>) {
+    let Some(projects_dir) = sessions::claude_projects_root() else {
+        info!(
+            target: "trail::claude_watcher",
+            "cannot resolve home directory; claude sessions watcher idle"
+        );
+        return;
+    };
+    if !projects_dir.is_dir() {
+        info!(
+            target: "trail::claude_watcher",
+            path = %projects_dir.display(),
+            "no ~/.claude/projects/ directory; claude sessions watcher idle"
+        );
+        return;
+    }
+
+    let handle_clone = handle.clone();
+    let handle_for_error = handle.clone();
+    let result = watcher::spawn_watcher(
+        &projects_dir,
+        "trail-claude-watcher",
+        move |_paths| {
+            // Coalesce: per debounce window, emit one event. The React layer
+            // refetches list_claude_sessions; we don't need to enumerate
+            // per-path because the enumeration is the canonical source.
+            let _ = handle_clone.emit("claude-session-changed", serde_json::json!({}));
+        },
+        move |messages| {
+            // Re-use the existing `watcher-degraded` event surface so the
+            // banner copy stays uniform. The frontend can read the
+            // `messages` to distinguish the source if needed.
+            let _ = handle_for_error.emit(
+                "watcher-degraded",
+                serde_json::json!({
+                    "messages": messages,
+                }),
+            );
+        },
+    );
+    match result {
+        Ok(h) => {
+            Box::leak(Box::new(h));
+            info!(
+                target: "trail::claude_watcher",
+                path = %projects_dir.display(),
+                "claude sessions watcher started"
+            );
+        }
+        Err(e) => {
+            error!(
+                target: "trail::claude_watcher",
+                error = %e,
+                "spawn_watcher for claude sessions failed"
+            );
+            // v0.2 P2-F7: surface startup failure to the UI. Without
+            // this, the Capture surface's empty-state cannot distinguish
+            // "no sessions yet" from "watcher failed to attach." Reuse
+            // the existing `watcher-degraded` channel so the banner copy
+            // stays uniform with the fs-watcher path. If the emit
+            // itself fails (renderer not yet attached during early
+            // boot), log at warn so the visibility gap is captured.
+            if let Err(emit_err) = handle.emit(
+                "watcher-degraded",
+                serde_json::json!({
+                    "messages": vec![format!("claude sessions watcher startup: {e}")],
+                }),
+            ) {
+                warn!(
+                    target: "trail::claude_watcher",
+                    error = %emit_err,
+                    "could not surface watcher-degraded banner to UI"
+                );
+            }
         }
     }
 }

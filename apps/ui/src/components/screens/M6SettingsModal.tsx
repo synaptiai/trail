@@ -47,10 +47,15 @@ export interface M6SettingsModalProps {
   persona: Persona;
 }
 
+// gh#18 AC#8: the Capture surface (gh#18) is now the primary place to
+// configure capture — auto-detect runs on its mount, and the Re-detect
+// button covers the override case for most users. Settings retains the
+// advanced overrides (path override + Verify probe) under this rename so
+// users with multiple `trail` installs can still pin the binary path.
 const SECTIONS: TabItem[] = [
   { id: 'general', label: 'General' },
   { id: 'redaction', label: 'Redaction' },
-  { id: 'capture', label: 'Capture' },
+  { id: 'capture', label: 'Capture (advanced)' },
   { id: 'pinned', label: 'Pinned sessions' },
 ];
 
@@ -411,6 +416,11 @@ function CapturePanel({ settings, onChange }: PanelProps) {
 
   return (
     <div className="m6__panel">
+      <p className="type-body-sm m6__advanced-blurb">
+        The Capture surface auto-detects the <code>trail</code> CLI on
+        launch. These advanced overrides only apply when you have multiple
+        installs and want to pin a specific binary path.
+      </p>
       <label className="m6__field">
         <span className="type-ui">Capture CLI path</span>
         <input

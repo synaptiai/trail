@@ -14,17 +14,23 @@ import {
 const VALID_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 describe('IPC contract', () => {
-  it('exposes the 12 B5 §6.1 commands + validate_capture_cli_path + decide_on_pr + detect_capture_cli (gh#11 F3 + gh#12 AC-4 + gh#17)', () => {
+  it('exposes the 18 commands (gh#11 F3 + gh#12 AC-4 + gh#17 + gh#18 A1/A3)', () => {
     // Cycle-1.5 F3 added validate_capture_cli_path (13).
     // Sprint 5 (gh#12 AC-4) added decide_on_pr (14).
-    // gh#17 adds detect_capture_cli (15) — Settings → Capture
-    // "Detect" button + FirstRun auto-detect. The pin canaries any
-    // future addition; updating the test is a deliberate decision
-    // point with the cycle that added each entry documented.
+    // gh#17 added detect_capture_cli (15) — Settings → Capture
+    // "Detect" button + FirstRun auto-detect.
+    // gh#18 A1 added list_claude_sessions (16) — Capture surface
+    // session enumeration (AC#3).
+    // gh#18 A3 added spawn_packet_generate + cancel_packet_generate
+    // (17 + 18) — the per-row Generate flow + live progress stream.
+    // The pin canaries any future addition; updating the test is a
+    // deliberate decision point with the cycle that added each entry.
     expect(Object.keys(IPC_COMMAND_SCHEMAS).sort()).toEqual([
       'audit_log_append',
+      'cancel_packet_generate',
       'decide_on_pr',
       'detect_capture_cli',
+      'list_claude_sessions',
       'override_risk',
       'post_to_pr',
       'preview_redacted',
@@ -33,6 +39,7 @@ describe('IPC contract', () => {
       'read_packet',
       'read_settings',
       'save_decision',
+      'spawn_packet_generate',
       'subscribe_fs_watch',
       'subscribe_settings_change',
       'validate_capture_cli_path',

@@ -101,6 +101,11 @@ export const tokens = {
     horizonHeroMax: 360,
     skeletonBlock: 120,
     iconKey: 10,
+    /** PR #34 cycle-3: needed by the gh#18 Capture surface. */
+    iconMd: 16,
+    iconXl: 48,
+    editorialColumn: 840,
+    underlineOffset: 3,
   },
   /**
    * Border widths (B3 §5.1.1 hairline + focus-ring scale). Pinned in tokens

@@ -78,7 +78,7 @@ async function openCapturePanel(initialSettings: Settings = fixture) {
     />,
   );
   await act(async () => {
-    screen.getByRole('tab', { name: 'Capture' }).click();
+    screen.getByRole('tab', { name: 'Capture (advanced)' }).click();
   });
   return { onSettingsSaved };
 }

@@ -280,6 +280,7 @@ pub struct WatcherHandle {
 /// operator sees the offline state.
 pub fn spawn_watcher<F, E>(
     sessions_dir: &Path,
+    thread_name: &str,
     on_event: F,
     on_error: E,
 ) -> Result<WatcherHandle, notify::Error>
@@ -292,11 +293,15 @@ where
     debouncer
         .watcher()
         .watch(sessions_dir, RecursiveMode::Recursive)?;
-    // Spawn a thread that drains the channel and dispatches paths.
+    // Spawn a thread that drains the channel and dispatches paths. Per
+    // v0.2 P2-F6: the drain-thread name distinguishes the fs-packet
+    // watcher from the claude-sessions watcher in panic backtraces and
+    // `top -H`. Both watchers spawned with the same name made
+    // diagnostics ambiguous.
     let on_event = Arc::new(on_event);
     let on_error = Arc::new(on_error);
     std::thread::Builder::new()
-        .name("trail-fs-watcher".into())
+        .name(thread_name.to_string())
         .spawn(move || drain_loop(rx, on_event, on_error))
         .ok();
     Ok(WatcherHandle {
@@ -597,6 +602,45 @@ mod tests {
             }
             other => panic!("expected ParseError for non-NotFound read error, got {other:?}"),
         }
+    }
+
+    /// v0.2 P2-F6: `spawn_watcher` honors the `thread_name` parameter so
+    /// the fs-packet watcher and the claude-sessions watcher are
+    /// distinguishable in panic backtraces and `top -H`. Asserted by
+    /// reading `thread::current().name()` inside the on_event closure
+    /// after a file write triggers a debounced event.
+    #[test]
+    fn spawn_watcher_names_drain_thread_v02_p2_f6() {
+        use std::sync::mpsc::channel as std_channel;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (name_tx, name_rx) = std_channel::<Option<String>>();
+
+        let _handle = spawn_watcher(
+            dir.path(),
+            "trail-test-named-watcher",
+            move |_paths| {
+                // Capture thread name from the drain thread's context.
+                let _ = name_tx
+                    .send(std::thread::current().name().map(|s| s.to_string()));
+            },
+            |_messages| {},
+        )
+        .expect("spawn_watcher");
+
+        // Trigger an event so the drain thread executes the closure.
+        // notify-debouncer-full default debounce window is DEBOUNCE_MS
+        // (500ms) — the recv timeout must exceed it.
+        std::fs::write(dir.path().join("ping.txt"), b"hello").expect("write");
+        let observed = name_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("debounced event did not arrive within 3s");
+        assert_eq!(
+            observed.as_deref(),
+            Some("trail-test-named-watcher"),
+            "drain thread did not adopt the thread_name argument"
+        );
     }
 
     #[test]

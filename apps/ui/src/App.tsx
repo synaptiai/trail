@@ -4,6 +4,7 @@ import { TopBar } from '@/components/screens/TopBar';
 import { TrailSidebar } from '@/components/screens/TrailSidebar';
 import { PacketView } from '@/components/screens/PacketView';
 import { FirstRun } from '@/components/screens/FirstRun';
+import { CaptureSurface } from '@/components/screens/CaptureSurface';
 import { ToastHost } from '@/components/screens/ToastHost';
 import { KeyboardOverlay } from '@/components/screens/KeyboardOverlay';
 import { M6SettingsModal } from '@/components/screens/M6SettingsModal';
@@ -13,6 +14,11 @@ import {
 } from '@/components/screens/DiffHunkPerfHarness';
 import { prewarmHighlighter } from '@/services/highlight';
 import { isTextEntryTarget } from '@/services/keyboard';
+import {
+  persistLocation,
+  resolveInitialLocation,
+  type Location,
+} from '@/services/location';
 import type { Persona } from '@/ipc/contract';
 import './App.css';
 
@@ -47,9 +53,28 @@ function readPerfModeFromUrl(): PerfKind | null {
 export function App() {
   const persona = useMemo(readPersonaFromUrl, []);
   const perfMode = useMemo(readPerfModeFromUrl, []);
-  const [activePacketId, setActivePacketId] = useState<string | null>(null);
+  // gh#18 C1 — Location routing. Initial value from URL > localStorage >
+  // first-launch default. The `hasSettings` hint defaults to true (we
+  // can't probe synchronously); a future enhancement could read
+  // settings.json and route to `sessions` on first launch.
+  const [location, setLocation] = useState<Location>(() =>
+    resolveInitialLocation(true),
+  );
   const [overlayOpen, setOverlayOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+
+  // Derive activePacketId from location for back-compat with downstream
+  // components that read it. `null` means "no packet selected".
+  const activePacketId =
+    location.kind === 'packet' ? location.packet_id : null;
+  const setActivePacketId = useCallback((id: string | null) => {
+    setLocation(id ? { kind: 'packet', packet_id: id } : { kind: 'trail' });
+  }, []);
+
+  // Persist on every change so the next launch lands on the same location.
+  useEffect(() => {
+    persistLocation(location);
+  }, [location]);
 
   useEffect(() => {
     if (perfMode === 'diff-hunk-cold') return;
@@ -127,6 +152,13 @@ export function App() {
 
   const handleOpenSettings = useCallback(() => setSettingsOpen(true), []);
   const handleCloseSettings = useCallback(() => setSettingsOpen(false), []);
+  // Hoisted above the perfMode early-return so React sees the same hook
+  // count on every render regardless of which branch is taken
+  // (react-hooks/rules-of-hooks).
+  const handleOpenSessions = useCallback(
+    () => setLocation({ kind: 'sessions' }),
+    [],
+  );
 
   if (perfMode) {
     return (
@@ -139,32 +171,55 @@ export function App() {
   }
 
   return (
-    <div className="app" data-persona={persona}>
-      <TopBar persona={persona} onOpenSettings={handleOpenSettings} />
+    <div className="app" data-persona={persona} data-location={location.kind}>
+      <TopBar
+        persona={persona}
+        onOpenSettings={handleOpenSettings}
+        location={location.kind}
+        onOpenSessions={handleOpenSessions}
+      />
       <HorizonLine variant="app-chrome" />
       <main className="app__main">
-        <TrailSidebar
-          persona={persona}
-          activePacketId={activePacketId}
-          onSelect={setActivePacketId}
-        />
-        <section
-          id="main-content"
-          className="app__content"
-          aria-label="Packet view"
-          tabIndex={-1}
-        >
-          {activePacketId ? (
-            <PacketView
-              packetId={activePacketId}
+        {location.kind === 'sessions' ? (
+          <section
+            id="main-content"
+            className="app__content app__content--full-width"
+            aria-label="Capture surface"
+            tabIndex={-1}
+          >
+            <CaptureSurface
               persona={persona}
-              settingsOpen={settingsOpen}
-              onSettingsClose={handleCloseSettings}
+              onOpenPacket={(id) =>
+                setLocation({ kind: 'packet', packet_id: id })
+              }
             />
-          ) : (
-            <FirstRun persona={persona} />
-          )}
-        </section>
+          </section>
+        ) : (
+          <>
+            <TrailSidebar
+              persona={persona}
+              activePacketId={activePacketId}
+              onSelect={setActivePacketId}
+            />
+            <section
+              id="main-content"
+              className="app__content"
+              aria-label="Packet view"
+              tabIndex={-1}
+            >
+              {activePacketId ? (
+                <PacketView
+                  packetId={activePacketId}
+                  persona={persona}
+                  settingsOpen={settingsOpen}
+                  onSettingsClose={handleCloseSettings}
+                />
+              ) : (
+                <FirstRun persona={persona} />
+              )}
+            </section>
+          </>
+        )}
       </main>
       <ToastHost />
       {overlayOpen ? (

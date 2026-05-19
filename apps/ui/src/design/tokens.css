@@ -57,6 +57,16 @@
   --size-horizon-hero-max: 360px;
   --size-skeleton-block: 120px;
   --size-icon-key: 10px;
+  /* PR #34 cycle-3: tokens needed by the gh#18 Capture surface. The
+     editorial-column width matches the design handoff's Reading view.
+     The icon-md/xl values fill the gap between --size-glyph-icon (20)
+     and existing larger sizes for the first-launch step glyphs. */
+  --size-icon-md: 16px;
+  --size-icon-xl: 48px;
+  --size-editorial-column: 840px;
+  /* PR #34 cycle-3: TopBar breadcrumb-link underline offset (--space-1 = 2px
+     is too tight; --space-2 = 4px is too loose). Semantic-purpose token. */
+  --size-underline-offset: 3px;
   --border-width-hairline: 1px;
   --border-width-thick: 2px;
   --border-width-focus-ring: 4px;

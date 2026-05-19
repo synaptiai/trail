@@ -24,7 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::db::{self, DbState, PacketMetaRow, RecentSession, SidebarRow, TrailFilter};
 use crate::saga::{
@@ -1528,6 +1528,178 @@ pub async fn detect_capture_cli(_args: EmptyArgs) -> IpcResult<DetectCaptureCliR
             suggested_fix: failure.suggested_fix,
         }),
     }
+}
+
+// -- list_claude_sessions (gh#18 AC#3) ------------------------------------
+//
+// Enumerates Claude Code sessions under `~/.claude/projects/` with metadata
+// (started_at, message_count, packet_id cross-reference). Discriminated
+// `kind` response so failure surfaces can render an explanation card on
+// the Capture surface rather than a toast.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ListClaudeSessionsResponse {
+    Ok {
+        sessions: Vec<crate::sessions::ClaudeSession>,
+    },
+    Failed {
+        failure_kind: crate::sessions::ListFailureKind,
+        message: String,
+    },
+}
+
+#[tauri::command]
+pub async fn list_claude_sessions(
+    _args: EmptyArgs,
+    metadata_cache: tauri::State<'_, std::sync::Arc<crate::sessions::JsonlMetadataCache>>,
+) -> IpcResult<ListClaudeSessionsResponse> {
+    // v0.2 P2-F4: clone the Arc so the blocking task can take ownership.
+    let cache = std::sync::Arc::clone(&*metadata_cache);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let projects_root = match crate::sessions::claude_projects_root() {
+            Some(p) => p,
+            None => {
+                return Err(crate::sessions::ListError {
+                    kind: crate::sessions::ListFailureKind::ProjectsDirNotFound,
+                    message: "cannot resolve home directory".into(),
+                });
+            }
+        };
+        // Trail sessions root: <repo>/.trail/sessions when running in a repo;
+        // None when the cwd has no .trail/ directory. We probe both `./.trail`
+        // and the current Tauri working directory.
+        let cwd = std::env::current_dir().ok();
+        let trail_root = cwd
+            .as_ref()
+            .map(|d| d.join(".trail").join("sessions"))
+            .filter(|p| p.is_dir());
+        crate::sessions::list_claude_sessions(&projects_root, trail_root.as_deref(), &cache)
+    })
+    .await
+    .map_err(|e| IpcError::Internal {
+        message: format!("list_claude_sessions join: {e}"),
+    })?;
+
+    match result {
+        Ok(sessions) => Ok(ListClaudeSessionsResponse::Ok { sessions }),
+        Err(err) => Ok(ListClaudeSessionsResponse::Failed {
+            failure_kind: err.kind,
+            message: err.message,
+        }),
+    }
+}
+
+// -- spawn_packet_generate / cancel_packet_generate (gh#18 AC#5/6) -------
+//
+// Spawns `trail packet generate <session_id>` and streams stderr as
+// `packet-generate-progress` events. The IPC returns a `spawn_id` the
+// renderer holds for later cancellation. Worker lives in `spawn.rs`.
+
+#[derive(Deserialize)]
+pub struct SpawnPacketGenerateArgs {
+    pub session_id: String,
+    /// SEC-1: persona is required so the handler can reject auditor mode
+    /// at the IPC boundary. `trail packet generate` is a state-mutating
+    /// command (writes packet YAML to `.trail/sessions/<sid>/packet-N.yml`)
+    /// and must obey the same persona model as save_decision /
+    /// override_risk / post_to_pr / decide_on_pr / write_settings.
+    pub persona: Persona,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SpawnPacketGenerateResponse {
+    Spawned {
+        spawn_id: String,
+    },
+    Failed {
+        failure_kind: crate::spawn::SpawnFailureKind,
+        message: String,
+    },
+}
+
+#[tauri::command]
+pub async fn spawn_packet_generate<R: tauri::Runtime>(
+    args: SpawnPacketGenerateArgs,
+    app: tauri::AppHandle<R>,
+    registry: State<'_, crate::spawn::SpawnRegistry>,
+) -> IpcResult<SpawnPacketGenerateResponse> {
+    reject_auditor(args.persona, "spawn_packet_generate")?;
+    if let Err(err) = crate::spawn::validate_session_id(&args.session_id) {
+        return Ok(SpawnPacketGenerateResponse::Failed {
+            failure_kind: err.kind,
+            message: err.message,
+        });
+    }
+
+    let session_id = args.session_id.clone();
+    let child = match crate::spawn::spawn_trail_packet_generate_child(&session_id) {
+        Ok(c) => c,
+        Err(err) => {
+            return Ok(SpawnPacketGenerateResponse::Failed {
+                failure_kind: err.kind,
+                message: err.message,
+            });
+        }
+    };
+
+    // Generate the spawn_id and register the cancel flag BEFORE spawning the
+    // worker thread so a fast cancel call can succeed even if the worker
+    // hasn't entered its poll loop yet.
+    let spawn_id = ulid::Ulid::new().to_string();
+    let cancel_flag = registry.register(spawn_id.clone());
+
+    let app_clone = app.clone();
+    let spawn_id_for_worker = spawn_id.clone();
+    let session_id_for_worker = session_id.clone();
+    // Cleanup happens via app_clone.state() inside the worker thread — the
+    // SpawnRegistry holds a Mutex<HashMap> which isn't Clone, so we route
+    // through Tauri's state-resolution instead of a shared handle.
+    std::thread::Builder::new()
+        .name(format!("trail-spawn-{spawn_id}"))
+        .spawn(move || {
+            crate::spawn::run_packet_generate(
+                app_clone.clone(),
+                spawn_id_for_worker.clone(),
+                session_id_for_worker,
+                child,
+                cancel_flag,
+            );
+            // Cleanup the registry entry once the worker exits.
+            let registry = app_clone.state::<crate::spawn::SpawnRegistry>();
+            registry.cleanup(&spawn_id_for_worker);
+        })
+        .map_err(|e| IpcError::Internal {
+            message: format!("spawn worker thread: {e}"),
+        })?;
+
+    Ok(SpawnPacketGenerateResponse::Spawned { spawn_id })
+}
+
+#[derive(Deserialize)]
+pub struct CancelPacketGenerateArgs {
+    pub spawn_id: String,
+    /// SEC-1: same persona gate as spawn_packet_generate. Auditor mode
+    /// cannot cancel a spawn it should not have been able to start. The
+    /// kill side-effect on the child process is a state mutation
+    /// (terminates a process the renderer should not control).
+    pub persona: Persona,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CancelPacketGenerateResponse {
+    Ok { cancelled: bool },
+}
+
+#[tauri::command]
+pub async fn cancel_packet_generate(
+    args: CancelPacketGenerateArgs,
+    registry: State<'_, crate::spawn::SpawnRegistry>,
+) -> IpcResult<CancelPacketGenerateResponse> {
+    reject_auditor(args.persona, "cancel_packet_generate")?;
+    let cancelled = registry.cancel(&args.spawn_id);
+    Ok(CancelPacketGenerateResponse::Ok { cancelled })
 }
 
 // -- seed_stress_packets (test-only IPC, gh#8 criterion 5 perf benchmark) -

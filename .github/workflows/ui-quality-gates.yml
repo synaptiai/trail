@@ -193,8 +193,18 @@ jobs:
         # via tests/ipc_dispatch_smoke.rs::dispatch_and_snapshot (gh#2 P1).
         # The wire-roundtrip step below consumes these without needing an
         # artifact transfer because we run in the same job.
+        #
+        # PR #34 cycle-4: `--test-threads=1` is retained because some
+        # test bodies mutate process-wide env vars (HOME, PATH). Five
+        # tauri::test::MockRuntime-based tests are marked
+        # `#[cfg_attr(target_os = "linux", ignore)]` in the test source
+        # (search for "tauri MockRuntime Linux FD leak"); they exercise
+        # the wire-shape via the dispatcher and pass everywhere except
+        # ubuntu-latest, where MockRuntime leaks a GTK resource that
+        # exhausts after ~13 boots. macOS local + dev machines still
+        # run them.
         working-directory: apps/ui/src-tauri
-        run: cargo test --locked
+        run: cargo test --locked -- --test-threads=1
 
       # ----- gh#2 Phase 1: wire-roundtrip bridge -----
       #

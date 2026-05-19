@@ -41,6 +41,9 @@ export interface FsWatchCallbacks {
   onPacketChangedExternally?: (payload: ExternalChangePayload) => void;
   /** Trail browser should re-query libSQL. */
   onTrailNeedsRefresh?: () => void;
+  /** gh#18 A2 — ~/.claude/projects/ watcher saw any change. Capture
+   * surface refetches list_claude_sessions. */
+  onClaudeSessionChanged?: () => void;
 }
 
 /**
@@ -74,6 +77,10 @@ export async function subscribeFsWatch(
     if (callbacks.onTrailNeedsRefresh) {
       const cb = callbacks.onTrailNeedsRefresh;
       unsubs.push(await listen('trail-needs-refresh', () => cb()));
+    }
+    if (callbacks.onClaudeSessionChanged) {
+      const cb = callbacks.onClaudeSessionChanged;
+      unsubs.push(await listen('claude-session-changed', () => cb()));
     }
   } catch (err) {
     // Tauri bridge unavailable (Storybook, jsdom/happy-dom test env, web

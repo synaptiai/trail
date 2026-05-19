@@ -18,6 +18,10 @@ import './TopBar.css';
 export interface TopBarProps {
   persona: Persona;
   onOpenSettings?: () => void;
+  /** gh#18 C2 — current location for breadcrumb rendering. */
+  location?: 'trail' | 'sessions' | 'packet';
+  /** gh#18 C2 — clicked breadcrumb item navigates to sessions. */
+  onOpenSessions?: () => void;
 }
 
 const PERSONA_LABEL: Record<Persona, string> = {
@@ -26,7 +30,12 @@ const PERSONA_LABEL: Record<Persona, string> = {
   auditor: 'Auditor',
 };
 
-export function TopBar({ persona, onOpenSettings }: TopBarProps) {
+export function TopBar({
+  persona,
+  onOpenSettings,
+  location,
+  onOpenSessions,
+}: TopBarProps) {
   // Cycle-3 C8 (PR #21): the settings cog is gated by persona INSIDE
   // TopBar, not by the caller passing/omitting onOpenSettings. Auditor
   // mode is read-only per B5 §6.5; surfacing the cog at the
@@ -46,6 +55,26 @@ export function TopBar({ persona, onOpenSettings }: TopBarProps) {
           Trail
         </span>
         <span className="sr-only">Trail — AI-native change-control</span>
+        {location === 'sessions' && (
+          <span className="topbar__breadcrumb" aria-current="page">
+            <span className="topbar__breadcrumb-sep" aria-hidden> · </span>
+            sessions
+          </span>
+        )}
+        {location === 'packet' && onOpenSessions && (
+          <span className="topbar__breadcrumb">
+            <span className="topbar__breadcrumb-sep" aria-hidden> · </span>
+            <button
+              type="button"
+              className="topbar__breadcrumb-link"
+              onClick={onOpenSessions}
+            >
+              sessions
+            </button>
+            <span className="topbar__breadcrumb-sep" aria-hidden> · </span>
+            <span aria-current="page">packet</span>
+          </span>
+        )}
       </div>
       <div className="topbar__meta">
         <Chip tone="accent">{PERSONA_LABEL[persona]}</Chip>
