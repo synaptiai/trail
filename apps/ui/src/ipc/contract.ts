@@ -466,10 +466,24 @@ export const AuditLogAppendArgs = z.object({
  *
  * Validation here mirrors the Rust handler's hardening: non-empty, soft
  * length cap. The Rust handler re-validates (defense in depth).
+ *
+ * gh#17 AC#3: the Rust handler routes through
+ * `probe_capture_version_with_augmented_path` so Verify uses the same
+ * PATH-augmented spawn as Detect. A path that Verifies must also Detect
+ * and vice versa.
  */
 export const ValidateCaptureCliPathArgs = z.object({
   path: z.string().min(1).max(4096),
 });
+
+/**
+ * `detect_capture_cli` (gh#17). No arguments — the Rust handler invokes
+ * `cli_bridge::detect_capture_cli` which probes for the `trail` binary
+ * via login-shell, candidate paths, and marker file in order. The
+ * frontend calls this from the M6 Settings → Capture "Detect" button
+ * and from the FirstRun screen on first launch.
+ */
+export const DetectCaptureCliArgs = z.object({});
 
 // ---------------------------------------------------------------------------
 // Command surface — serializable signature index
@@ -503,6 +517,7 @@ export const IPC_COMMAND_SCHEMAS = {
   subscribe_fs_watch: z.object({}),
   subscribe_settings_change: z.object({}),
   validate_capture_cli_path: ValidateCaptureCliPathArgs,
+  detect_capture_cli: DetectCaptureCliArgs,
 } as const;
 
 export type IpcCommandName = keyof typeof IPC_COMMAND_SCHEMAS;
@@ -655,6 +670,42 @@ export type ValidateCaptureCliPathResponse = z.infer<
 >;
 
 /**
+ * `detect_capture_cli` response — gh#17. Discriminated on `kind`:
+ *
+ *  - `detected` carries the resolved absolute path, the parsed `--version`
+ *    string, and which probe strategy found it. The UI's Settings →
+ *    Capture pane auto-fills the path on this branch; FirstRun emits a
+ *    success toast.
+ *
+ *  - `failed` carries a classified `failure_kind` discriminant the UI's
+ *    failure card switches on plus user-actionable copy (`message`,
+ *    `suggested_fix`). Reserving the IPC error channel for true system
+ *    errors keeps "no trail found" a routine result, not a toast-level
+ *    failure.
+ */
+export const detectCaptureCliResponseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('detected'),
+    path: z.string().min(1),
+    version: z.string().min(1),
+    source: z.enum(['login-shell', 'candidate', 'marker-file']),
+  }),
+  z.object({
+    kind: z.literal('failed'),
+    failure_kind: z.enum([
+      'binary-not-installed',
+      'node-missing',
+      'probe-timed-out',
+      'probe-error',
+    ]),
+    message: z.string(),
+    suggested_fix: z.string(),
+  }),
+]);
+
+export type DetectCaptureCliResponse = z.infer<typeof detectCaptureCliResponseSchema>;
+
+/**
  * Map command-name → response schema (zod). Commands not in the map skip
  * post-invoke validation; this is honest about the Sprint 1 state where
  * many handlers return placeholder errors.
@@ -684,6 +735,7 @@ export const IPC_RESPONSE_SCHEMAS: Partial<Record<IpcCommandName, z.ZodTypeAny>>
   subscribe_fs_watch: okResponseSchema,
   subscribe_settings_change: okResponseSchema,
   validate_capture_cli_path: validateCaptureCliPathResponseSchema,
+  detect_capture_cli: detectCaptureCliResponseSchema,
 };
 
 // ---------------------------------------------------------------------------

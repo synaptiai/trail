@@ -1157,6 +1157,20 @@ fn merge_settings_partial<'a>(
                 let s = value
                     .as_str()
                     .ok_or_else(|| invalid("capture_cli_path", "expected string"))?;
+                // gh#17 SEC-1: parity with the cap enforced at
+                // `validate_capture_cli_path` (ipc.rs:1423). Without this,
+                // a 4MB string could be persisted to settings.json and
+                // then spawned literally — settings file would also hit
+                // the 64KB SETTINGS_MAX_BYTES cap at read time, but
+                // bounding here keeps `Settings::capture_cli_path` in a
+                // shape that downstream `spawn()` can safely consume
+                // without further validation.
+                if s.len() > 4096 {
+                    return Err(invalid(
+                        "capture_cli_path",
+                        &format!("too long ({} bytes; max 4096)", s.len()),
+                    ));
+                }
                 current.capture_cli_path = s.into();
             }
             "pinned_sessions" => {
@@ -1448,6 +1462,71 @@ pub async fn validate_capture_cli_path(
                 message: err.to_string(),
             })
         }
+    }
+}
+
+// -- detect_capture_cli (gh#17) ------------------------------------------
+//
+// Auto-detect the `trail` binary on this machine. Probe order (AC#2):
+//
+//   (a) login-shell — `zsh -ic 'command -v trail'`, then `bash -ic`,
+//       bounded by 5s. Picks up users whose interactive PATH is set in
+//       .zshrc / .bashrc but is NOT inherited by Tauri's GUI launch.
+//   (b) candidate paths — /opt/homebrew/bin/trail, /usr/local/bin/trail,
+//       $HOME/.npm-global/bin/trail, $HOME/.local/bin/trail. Catches
+//       the common macOS / Linux npm install matrix.
+//   (c) marker file — ~/.trail/last-run.json `cli_path` field if
+//       present (best-effort; CLI cooperation is a follow-up).
+//
+// First success wins. Each strategy invokes the augmented-PATH version
+// probe so the macOS GUI-PATH bug (env: node: No such file) is sidestepped
+// before the user opens Settings.
+//
+// On failure the response carries a classified `failure_kind` and an
+// actionable `suggested_fix` (install command, symlink command, etc.).
+// The discriminated union mirrors `validate_capture_cli_path`'s pattern:
+// IPC error channel reserved for true system errors, "no trail found"
+// is a routine result the UI renders inline.
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DetectCaptureCliResponse {
+    /// A `trail` binary was located and successfully responded to
+    /// `--version`. `source` indicates which probe strategy resolved it.
+    Detected {
+        path: String,
+        version: String,
+        source: crate::cli_bridge::DetectSource,
+    },
+    /// No working `trail` binary was found via any probe strategy.
+    /// `failure_kind` is the classified discriminant the UI's failure
+    /// card switches on; `message` + `suggested_fix` carry user-actionable
+    /// copy.
+    Failed {
+        failure_kind: crate::cli_bridge::DetectFailureKind,
+        message: String,
+        suggested_fix: String,
+    },
+}
+
+#[tauri::command]
+pub async fn detect_capture_cli(_args: EmptyArgs) -> IpcResult<DetectCaptureCliResponse> {
+    let result = tauri::async_runtime::spawn_blocking(crate::cli_bridge::detect_capture_cli)
+        .await
+        .map_err(|e| IpcError::Internal {
+            message: format!("detect_capture_cli join: {e}"),
+        })?;
+    match result {
+        Ok(success) => Ok(DetectCaptureCliResponse::Detected {
+            path: success.path,
+            version: success.version,
+            source: success.source,
+        }),
+        Err(failure) => Ok(DetectCaptureCliResponse::Failed {
+            failure_kind: failure.kind,
+            message: failure.message,
+            suggested_fix: failure.suggested_fix,
+        }),
     }
 }
 

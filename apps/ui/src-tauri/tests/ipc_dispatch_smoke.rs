@@ -201,6 +201,7 @@ fn boot_app_with_handlers() -> (
             ipc::subscribe_fs_watch,
             ipc::subscribe_settings_change,
             ipc::validate_capture_cli_path,
+            ipc::detect_capture_cli,
         ])
         .build(mock_context(noop_assets()))
         .expect("mock_builder().build() must succeed for IPC dispatch");
@@ -610,6 +611,25 @@ fn validate_capture_cli_path_dispatches_with_wrapped_args() {
     // Will Ok-with-False (binary not present in CI) or Ok-with-True
     // (lucky tempdir hit) — either way, POST-resolution; the helper
     // has already asserted no resolver-level failure.
+}
+
+#[test]
+fn detect_capture_cli_dispatches_with_empty_args() {
+    // gh#17: the Detect IPC takes no arguments — the empty `args: {}`
+    // envelope must still pass the Tauri resolver (the v0.1.0 wire-
+    // shape regression would have flat-rejected this). The helper
+    // asserts POST-resolution; the actual detect_capture_cli outcome
+    // is environment-dependent (login-shell + filesystem state of
+    // the CI runner). The wire snapshot pins the discriminated-union
+    // shape.
+    let (app, _tmp) = boot_app_with_handlers();
+    let window = build_window(&app);
+    let _ = dispatch_and_snapshot(
+        &window,
+        "detect_capture_cli",
+        json!({ "args": {} }),
+        "detect_capture_cli__probe",
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ import {
   ipcErrorSchema,
   type Settings,
   type ValidateCaptureCliPathResponse,
+  type DetectCaptureCliResponse,
 } from './contract.js';
 
 type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -203,4 +204,20 @@ export async function validateCaptureCliPath(
   path: string,
 ): Promise<ValidateCaptureCliPathResponse> {
   return invoke<ValidateCaptureCliPathResponse>('validate_capture_cli_path', { path });
+}
+
+/**
+ * Auto-detect the `trail` CLI binary on this machine (gh#17). Probes
+ * the login shell, well-known npm install paths, and the marker file
+ * in order. Returns a discriminated union: `detected` carries the
+ * resolved path + version; `failed` carries a classified failure_kind
+ * and user-actionable suggested_fix. The Rust handler reserves the
+ * IPC error channel for true system errors, so "no trail found" is
+ * a routine response the UI renders inline.
+ *
+ * Called from the M6 Settings → Capture "Detect" button and from
+ * FirstRun on first launch.
+ */
+export async function detectCaptureCli(): Promise<DetectCaptureCliResponse> {
+  return invoke<DetectCaptureCliResponse>('detect_capture_cli', {});
 }

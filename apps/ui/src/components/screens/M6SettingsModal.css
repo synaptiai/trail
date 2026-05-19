@@ -103,3 +103,47 @@
 .m6__capture-status--err {
   color: var(--risk-crit);
 }
+
+/* gh#17: Detect-failure card. Renders below the status line with the
+   classified failure_kind + actionable suggested_fix from the Rust
+   `cli_bridge::detect_capture_cli` orchestrator. */
+.m6__capture-detect-failure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--risk-crit);
+  border-radius: var(--radius-2);
+  background-color: var(--surface-raised);
+}
+
+.m6__capture-detect-failure__title {
+  margin: 0;
+  color: var(--risk-crit);
+}
+
+.m6__capture-detect-failure__message {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.m6__capture-detect-failure__fix {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.m6__capture-detect-failure__fix > p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.m6__capture-detect-failure__fix-text {
+  margin: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-1);
+  background-color: var(--surface);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

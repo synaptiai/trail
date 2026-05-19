@@ -27,7 +27,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -99,17 +99,83 @@ pub struct CaptureVersion {
 /// invocation — there is no fallback to py-reference because Phase 1's
 /// `trail` binary is on main. If the binary is missing, return
 /// `Spawn("...")` and the UI surfaces the error.
+///
+/// gh#17: production callers (Settings → Capture Verify, settings.json
+/// validation) now route through [`probe_capture_version_with_augmented_path`]
+/// so the macOS GUI-PATH bug is fixed by default. This baseline variant
+/// remains for tests (it isolates the await/parse loop from the PATH
+/// augmentation logic) and as a public API for future callers that
+/// explicitly want the inherited environment.
+#[allow(dead_code)]
 pub fn probe_capture_version(bin: &str) -> Result<CaptureVersion, BridgeError> {
-    let argv = ["--version"];
-    let timeout = Duration::from_secs(30);
-    let mut child = Command::new(bin)
-        .args(argv)
+    let child = Command::new(bin)
+        .args(["--version"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| BridgeError::Spawn(format!("{bin}: {e}")))?;
+    await_version_probe(child, VERSION_PROBE_TIMEOUT)
+}
 
+/// Default timeout for `--version` probes. 30s is generous for what should
+/// be a sub-100ms operation but accommodates first-run node/npm startup on
+/// cold filesystems.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// PATH augmentations applied by [`probe_capture_version_with_augmented_path`]
+/// and [`detect_capture_cli`] (gh#17).
+///
+/// macOS GUI-PATH bug: a GUI-launched app inherits a minimal PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`) that does NOT include Homebrew or npm
+/// global bin dirs. An npm-installed `trail` whose shebang is
+/// `#!/usr/bin/env node` then can't find node at `/opt/homebrew/bin/node`
+/// and `env` exits 127. Prepending the standard install locations to PATH
+/// makes the env-shebang resolve without requiring the user to symlink
+/// node into `/usr/local/bin`.
+///
+/// $HOME-prefixed entries are expanded at call time via
+/// [`build_augmented_path`].
+const PATH_AUGMENTATIONS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "$HOME/.npm-global/bin",
+    "$HOME/.local/bin",
+];
+
+/// Build a PATH string with [`PATH_AUGMENTATIONS`] prepended to the
+/// inherited PATH. Augmentations win for the env-shebang lookup (the bug
+/// we're fixing — `env node` resolution against GUI-inherited PATH); the
+/// inherited PATH is retained as the suffix so the user's interactive
+/// configuration is not silently overridden for tools that aren't in the
+/// augmentation list.
+fn build_augmented_path() -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").ok();
+    let mut parts: Vec<String> = Vec::with_capacity(PATH_AUGMENTATIONS.len() + 1);
+    for entry in PATH_AUGMENTATIONS {
+        if let Some(rest) = entry.strip_prefix("$HOME") {
+            if let Some(home_dir) = home.as_deref() {
+                parts.push(format!("{home_dir}{rest}"));
+            }
+        } else {
+            parts.push((*entry).to_string());
+        }
+    }
+    if !inherited.is_empty() {
+        parts.push(inherited);
+    }
+    parts.join(":")
+}
+
+/// Run the wait + parse loop for a `--version` probe child process.
+/// Shared by [`probe_capture_version`] and
+/// [`probe_capture_version_with_augmented_path`] so the two probes agree
+/// on timeout semantics, exit-code handling, and empty-stdout treatment.
+fn await_version_probe(
+    mut child: Child,
+    timeout: Duration,
+) -> Result<CaptureVersion, BridgeError> {
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -146,6 +212,386 @@ pub fn probe_capture_version(bin: &str) -> Result<CaptureVersion, BridgeError> {
             }
         }
     }
+}
+
+/// gh#17 AC#3: variant of [`probe_capture_version`] that spawns with the
+/// inherited PATH augmented by [`PATH_AUGMENTATIONS`]. Use this when the
+/// probed binary may itself need to resolve dependencies via PATH —
+/// notably the npm-installed `trail` script whose `#!/usr/bin/env node`
+/// shebang fails under macOS GUI-PATH without augmentation.
+pub fn probe_capture_version_with_augmented_path(
+    bin: &str,
+) -> Result<CaptureVersion, BridgeError> {
+    let augmented_path = build_augmented_path();
+    let child = Command::new(bin)
+        .args(["--version"])
+        .env("PATH", &augmented_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| BridgeError::Spawn(format!("{bin}: {e}")))?;
+    await_version_probe(child, VERSION_PROBE_TIMEOUT)
+}
+
+// ---------------------------------------------------------------------------
+// gh#17 — auto-detect capture CLI (AC#1, AC#2)
+// ---------------------------------------------------------------------------
+//
+// Probe order (AC#2):
+//   (a) login-shell — spawn `zsh -ic 'command -v trail'`, then bash, with
+//       bounded 5s timeout. Picks up users whose interactive PATH is
+//       configured in .zshrc / .bashrc.
+//   (b) candidate paths — /opt/homebrew/bin/trail, /usr/local/bin/trail,
+//       $HOME/.npm-global/bin/trail, $HOME/.local/bin/trail. Catches the
+//       common npm install locations even when the login shell can't be
+//       interrogated.
+//   (c) marker file — read ~/.trail/last-run.json if present, use any
+//       `cli_path` field. Best-effort: requires CLI cooperation (a
+//       follow-up issue tracks the CLI writing the marker).
+//
+// First success wins. The `--version` probe is always
+// [`probe_capture_version_with_augmented_path`] so the env-shebang lookup
+// for `env node` works under macOS GUI-PATH.
+
+/// Bounded timeout for the login-shell probe step. A non-responsive
+/// interactive shell (fish prompt waiting for input, slow .zshrc network
+/// mount) must not block detection.
+const LOGIN_SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Successful detection outcome. Returned by [`detect_capture_cli`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetectSuccess {
+    /// Absolute path to the detected `trail` binary (or whatever the
+    /// login-shell `command -v` resolved — typically absolute).
+    pub path: String,
+    /// `--version` output (first line, trimmed).
+    pub version: String,
+    /// Which probe strategy located the binary. Useful for telemetry +
+    /// the UI's "detected at /path via login shell" copy.
+    pub source: DetectSource,
+}
+
+/// Which probe strategy produced the detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetectSource {
+    /// Resolved via `zsh -ic 'command -v trail'` (or bash fallback).
+    LoginShell,
+    /// Found at one of the well-known npm install locations.
+    Candidate,
+    /// Read from `~/.trail/last-run.json`'s `cli_path` field.
+    MarkerFile,
+}
+
+impl DetectSource {
+    /// Stable kebab-case discriminant. Used by tests + parity guards;
+    /// the IPC payload itself goes through serde's `rename_all = "kebab-case"`
+    /// derive, so this method is intentionally not called from the
+    /// production binary path.
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DetectSource::LoginShell => "login-shell",
+            DetectSource::Candidate => "candidate",
+            DetectSource::MarkerFile => "marker-file",
+        }
+    }
+}
+
+/// Detection failure with a classified kind and a user-actionable fix.
+/// Returned by [`detect_capture_cli`] when no probe strategy succeeds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetectFailure {
+    pub kind: DetectFailureKind,
+    /// Human-readable description of what failed. Surfaced verbatim in
+    /// the UI's failure card.
+    pub message: String,
+    /// Actionable next step (install command, symlink command, etc.).
+    /// Surfaced with a copy-to-clipboard affordance when the text reads
+    /// like a command.
+    pub suggested_fix: String,
+}
+
+/// Classified failure mode. The UI's failure card switches on this
+/// discriminant to render the right help copy (per AC#5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetectFailureKind {
+    /// No `trail` binary found via any probe strategy.
+    BinaryNotInstalled,
+    /// Binary found, but exec failed with `env: node: No such file` (exit
+    /// 127). The macOS GUI-PATH bug — most common failure mode on
+    /// Tauri-launched apps when augmented PATH still doesn't help.
+    NodeMissing,
+    /// Probe exceeded [`VERSION_PROBE_TIMEOUT`].
+    ProbeTimedOut,
+    /// Any other non-zero exit / spawn error / invalid stdout.
+    ProbeError,
+}
+
+impl DetectFailureKind {
+    /// Stable kebab-case discriminant — see [`DetectSource::as_str`] for
+    /// the rationale on why this is not called from the production path.
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DetectFailureKind::BinaryNotInstalled => "binary-not-installed",
+            DetectFailureKind::NodeMissing => "node-missing",
+            DetectFailureKind::ProbeTimedOut => "probe-timed-out",
+            DetectFailureKind::ProbeError => "probe-error",
+        }
+    }
+}
+
+/// Configuration for [`detect_capture_cli_with_config`]. Production
+/// callers use [`DetectConfig::default`]; tests override individual
+/// fields to inject deterministic candidate paths, marker files, and to
+/// skip the login-shell probe (which is unmockable at this layer).
+pub struct DetectConfig {
+    /// Absolute paths to probe in order after the login shell. Each
+    /// path is checked for existence + executability before invoking
+    /// the version probe.
+    pub candidate_paths: Vec<String>,
+    /// When true, skips strategy (a) — useful for tests that don't want
+    /// to depend on the host's login shell behavior.
+    pub skip_login_shell: bool,
+    /// Path to a marker file holding a JSON `{ "cli_path": "..." }`
+    /// hint. When `None`, the marker-file strategy is skipped.
+    pub marker_file: Option<std::path::PathBuf>,
+}
+
+impl Default for DetectConfig {
+    fn default() -> Self {
+        let home = std::env::var("HOME").ok();
+        let candidate_paths: Vec<String> = PATH_AUGMENTATIONS
+            .iter()
+            .filter_map(|entry| {
+                if let Some(rest) = entry.strip_prefix("$HOME") {
+                    home.as_deref().map(|h| format!("{h}{rest}/trail"))
+                } else {
+                    Some(format!("{entry}/trail"))
+                }
+            })
+            .collect();
+        let marker_file = home
+            .as_deref()
+            .map(|h| std::path::PathBuf::from(format!("{h}/.trail/last-run.json")));
+        Self {
+            candidate_paths,
+            skip_login_shell: false,
+            marker_file,
+        }
+    }
+}
+
+/// Detect the `trail` CLI binary on this machine. Production entry
+/// point: uses [`DetectConfig::default`] which probes the standard npm
+/// install locations on macOS / Linux.
+pub fn detect_capture_cli() -> Result<DetectSuccess, DetectFailure> {
+    detect_capture_cli_with_config(&DetectConfig::default())
+}
+
+/// Configurable detection — same logic as [`detect_capture_cli`] but
+/// takes an explicit [`DetectConfig`] for tests + future callers that
+/// want to override candidate paths, skip the login shell, or point at
+/// a different marker file.
+pub fn detect_capture_cli_with_config(
+    cfg: &DetectConfig,
+) -> Result<DetectSuccess, DetectFailure> {
+    let mut last_error: Option<BridgeError> = None;
+
+    // Strategy (a): login shell.
+    if !cfg.skip_login_shell {
+        if let Some(shell_path) = probe_login_shell_for_trail() {
+            match probe_capture_version_with_augmented_path(&shell_path) {
+                Ok(v) => {
+                    return Ok(DetectSuccess {
+                        path: shell_path,
+                        version: v.version,
+                        source: DetectSource::LoginShell,
+                    });
+                }
+                Err(e) => last_error = Some(e),
+            }
+        }
+    }
+
+    // Strategy (b): candidate paths.
+    for candidate in &cfg.candidate_paths {
+        if !Path::new(candidate).exists() {
+            continue;
+        }
+        match probe_capture_version_with_augmented_path(candidate) {
+            Ok(v) => {
+                return Ok(DetectSuccess {
+                    path: candidate.clone(),
+                    version: v.version,
+                    source: DetectSource::Candidate,
+                });
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+
+    // Strategy (c): marker file.
+    if let Some(marker) = &cfg.marker_file {
+        if let Some(marker_cli_path) = read_marker_cli_path(marker) {
+            match probe_capture_version_with_augmented_path(&marker_cli_path) {
+                Ok(v) => {
+                    return Ok(DetectSuccess {
+                        path: marker_cli_path,
+                        version: v.version,
+                        source: DetectSource::MarkerFile,
+                    });
+                }
+                Err(e) => last_error = Some(e),
+            }
+        }
+    }
+
+    Err(classify_detect_failure(last_error))
+}
+
+/// Run `zsh -ic 'command -v trail'`, then `bash -ic 'command -v trail'`
+/// as fallback. Returns the resolved path on success, `None` if neither
+/// shell exists, both time out, or the binary is not on the user's
+/// interactive PATH. Bounded by [`LOGIN_SHELL_PROBE_TIMEOUT`] per shell.
+fn probe_login_shell_for_trail() -> Option<String> {
+    for shell in &["zsh", "bash"] {
+        if let Some(path) = probe_one_login_shell(shell) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn probe_one_login_shell(shell: &str) -> Option<String> {
+    let mut child = Command::new(shell)
+        .args(["-ic", "command -v trail"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child.wait_with_output().ok()?;
+                if !status.success() {
+                    return None;
+                }
+                let path = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if path.is_empty() || !Path::new(&path).exists() {
+                    return None;
+                }
+                return Some(path);
+            }
+            Ok(None) => {
+                if start.elapsed() > LOGIN_SHELL_PROBE_TIMEOUT {
+                    let _ = child.kill();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Parse a marker file written by the CLI on its last successful run.
+/// Schema: `{ "cli_path": "/absolute/path/to/trail" }`. Returns the
+/// path if the file exists, parses, and points at an existing file.
+/// All failure cases return `None` — this is best-effort.
+fn read_marker_cli_path(path: &Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let cli_path = parsed.get("cli_path")?.as_str()?.trim();
+    if cli_path.is_empty() || !Path::new(cli_path).exists() {
+        return None;
+    }
+    Some(cli_path.to_string())
+}
+
+/// Convert the last-seen [`BridgeError`] (if any) into a classified
+/// [`DetectFailure`] with user-actionable copy.
+fn classify_detect_failure(last_error: Option<BridgeError>) -> DetectFailure {
+    match last_error {
+        None => DetectFailure {
+            kind: DetectFailureKind::BinaryNotInstalled,
+            message: "Could not find a `trail` binary on PATH or at standard install \
+locations (/opt/homebrew/bin, /usr/local/bin, ~/.npm-global/bin, ~/.local/bin)."
+                .to_string(),
+            suggested_fix:
+                "Install with: npm install -g @synapti/trail-capture".to_string(),
+        },
+        Some(BridgeError::NonZeroExit { code: 127, stderr })
+            if is_env_node_missing(&stderr) =>
+        {
+            DetectFailure {
+                kind: DetectFailureKind::NodeMissing,
+                message:
+                    "Found `trail` but `env` could not locate `node` (exit 127). On macOS, \
+GUI-launched apps inherit a minimal PATH that does not include where Homebrew \
+installs node."
+                    .to_string(),
+                suggested_fix:
+                    "Symlink node into the system PATH: sudo ln -s /opt/homebrew/bin/node \
+/usr/local/bin/node  —  or relaunch Trail from a terminal so the full PATH is \
+inherited."
+                    .to_string(),
+            }
+        }
+        Some(BridgeError::Timeout(_)) => DetectFailure {
+            kind: DetectFailureKind::ProbeTimedOut,
+            message: "Probing the `trail` binary did not return in time.".to_string(),
+            suggested_fix: "Re-run Detect. If it keeps timing out, set the path manually in \
+Settings."
+                .to_string(),
+        },
+        Some(BridgeError::NonZeroExit { code, stderr }) => DetectFailure {
+            kind: DetectFailureKind::ProbeError,
+            message: format!(
+                "Probe exited with code {code}: {}",
+                stderr.lines().next().unwrap_or("(no stderr)").trim()
+            ),
+            suggested_fix:
+                "Check that the binary at the configured path is executable and prints its \
+version on --version."
+                    .to_string(),
+        },
+        Some(BridgeError::Spawn(msg)) => DetectFailure {
+            kind: DetectFailureKind::BinaryNotInstalled,
+            message: format!("Could not spawn binary: {msg}"),
+            suggested_fix:
+                "Install with: npm install -g @synapti/trail-capture".to_string(),
+        },
+        Some(BridgeError::InvalidStdout(msg)) => DetectFailure {
+            kind: DetectFailureKind::ProbeError,
+            message: format!("Probe returned unexpected output: {msg}"),
+            suggested_fix:
+                "Check that the binary at the configured path is a valid Trail CLI."
+                    .to_string(),
+        },
+    }
+}
+
+/// Match the `env: node: No such file or directory` stderr that the npm
+/// `trail` script emits when its shebang `#!/usr/bin/env node` cannot
+/// resolve node. Pattern is conservative: requires the literal "env:"
+/// prefix AND a "node" mention AND a "No such file" tail.
+fn is_env_node_missing(stderr: &str) -> bool {
+    let lc = stderr.to_lowercase();
+    lc.contains("env:") && lc.contains("node") && lc.contains("no such file")
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +1023,12 @@ pub fn invoke_packet_decide(
 /// Validate that `bin` resolves to a runnable command. Used by the UI's
 /// settings panel to gate the "save" of a custom `capture_cli_path`. We
 /// run a quick `--version` probe; non-success → reject the path.
+///
+/// gh#17 AC#3: spawns with `PATH_AUGMENTATIONS` prepended to PATH so
+/// Verify cannot diverge from Detect on macOS GUI-launched processes. A
+/// path that resolves via Detect must also Verify (and vice versa); the
+/// previous default-PATH spawn made Verify fail on every macOS install
+/// where node lives at `/opt/homebrew/bin/node`.
 pub fn validate_capture_cli_path(bin_or_path: &str) -> Result<CaptureVersion, BridgeError> {
     // Lightweight path-existence check when looks like an absolute path,
     // before paying the spawn cost.
@@ -587,7 +1039,7 @@ pub fn validate_capture_cli_path(bin_or_path: &str) -> Result<CaptureVersion, Br
             )));
         }
     }
-    let result = probe_capture_version(bin_or_path);
+    let result = probe_capture_version_with_augmented_path(bin_or_path);
     if let Err(ref e) = result {
         warn!(target: "trail::cli_bridge", path = %bin_or_path, error = %e, "capture CLI probe failed");
     }
@@ -748,6 +1200,420 @@ mod tests {
             Err(BridgeError::Spawn(_)) => {}
             other => panic!("expected Spawn error for absent path, got {other:?}"),
         }
+    }
+
+    // ----- gh#17 — augmented-PATH probe (AC#3) ---------------------------
+
+    /// Test fixture: a shell script that emits its own `$PATH` env on
+    /// stdout. We use this to inspect what PATH the child process inherits
+    /// from the augmented-path probe — the cleanest assertion that PATH
+    /// augmentation is wired through to the subprocess.
+    fn write_path_echo_script() -> std::path::PathBuf {
+        write_test_script("printf '%s\\n' \"$PATH\"")
+    }
+
+    #[test]
+    fn build_augmented_path_prepends_homebrew_and_npm_bins() {
+        // The PATH augmentation is the load-bearing fix for the macOS
+        // GUI-PATH bug. If this drifts, the env-shebang lookup for
+        // `#!/usr/bin/env node` regresses on every Tauri GUI launch.
+        let path = build_augmented_path();
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "augmented PATH must include /opt/homebrew/bin (got: {path})"
+        );
+        assert!(
+            path.contains("/usr/local/bin"),
+            "augmented PATH must include /usr/local/bin (got: {path})"
+        );
+    }
+
+    #[test]
+    fn build_augmented_path_expands_home_prefix() {
+        // gh#17 spec: $HOME-prefixed entries are expanded at call time
+        // (not stored literally). The resolved value MUST include the
+        // user's actual home directory rather than the literal
+        // "$HOME/..." token. We can't set HOME for this thread safely;
+        // instead assert the actual home dir appears when HOME is set
+        // in the test process.
+        if let Ok(home) = std::env::var("HOME") {
+            let path = build_augmented_path();
+            let expected = format!("{home}/.npm-global/bin");
+            assert!(
+                path.contains(&expected),
+                "augmented PATH must include {expected} (got: {path})"
+            );
+        }
+    }
+
+    #[test]
+    fn probe_with_augmented_path_passes_augmentations_to_subprocess() {
+        // End-to-end proof that the augmented-PATH variant actually
+        // sets the spawned child's PATH env. We probe a script that
+        // echoes its $PATH; the returned `version` is the child's PATH
+        // verbatim. If augmentation fails to propagate, this regresses
+        // visibly.
+        let script = write_path_echo_script();
+        let result = probe_with_etxtbsy_retry_augmented(&script.to_string_lossy());
+        assert!(
+            result.is_ok(),
+            "augmented-path probe must succeed: {result:?}"
+        );
+        let inherited_path = result.unwrap().version;
+        assert!(
+            inherited_path.contains("/opt/homebrew/bin"),
+            "child PATH must contain /opt/homebrew/bin (got: {inherited_path})"
+        );
+        assert!(
+            inherited_path.contains("/usr/local/bin"),
+            "child PATH must contain /usr/local/bin (got: {inherited_path})"
+        );
+    }
+
+    #[test]
+    fn validate_capture_cli_path_uses_augmented_path() {
+        // gh#17 AC#3: Verify and Detect must use the same PATH-augmented
+        // spawn. validate_capture_cli_path is the back-end of Verify;
+        // probing a $PATH-echo script through it must produce the same
+        // augmented PATH that the direct augmented probe sees. A
+        // regression to the default-PATH probe_capture_version breaks
+        // every macOS first-launch flow.
+        let script = write_path_echo_script();
+        let result = validate_capture_cli_path(&script.to_string_lossy());
+        // ETXTBSY retry is open-coded here because validate has its own
+        // path-existence prelude; we just re-run on Text-file-busy.
+        let result = retry_on_etxtbsy(result, || {
+            validate_capture_cli_path(&script.to_string_lossy())
+        });
+        assert!(
+            result.is_ok(),
+            "validate must succeed against the path-echo script: {result:?}"
+        );
+        let inherited_path = result.unwrap().version;
+        assert!(
+            inherited_path.contains("/opt/homebrew/bin"),
+            "validate's subprocess must inherit augmented PATH (got: {inherited_path})"
+        );
+    }
+
+    /// ETXTBSY retry for the augmented-path probe — same shape as the
+    /// existing `probe_with_etxtbsy_retry`, parallel implementation
+    /// because the function under test is different.
+    fn probe_with_etxtbsy_retry_augmented(
+        bin: &str,
+    ) -> Result<CaptureVersion, BridgeError> {
+        for attempt in 0u64..5 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(50 * attempt));
+            }
+            match probe_capture_version_with_augmented_path(bin) {
+                Err(BridgeError::Spawn(msg))
+                    if msg.contains("Text file busy") && attempt < 4 =>
+                {
+                    continue;
+                }
+                other => return other,
+            }
+        }
+        unreachable!("retry loop exits via the `other` arm")
+    }
+
+    /// Generic ETXTBSY retry — takes an initial result and a retry
+    /// closure so call sites with a path-existence prelude can compose.
+    fn retry_on_etxtbsy<F>(
+        initial: Result<CaptureVersion, BridgeError>,
+        mut retry: F,
+    ) -> Result<CaptureVersion, BridgeError>
+    where
+        F: FnMut() -> Result<CaptureVersion, BridgeError>,
+    {
+        let mut result = initial;
+        for attempt in 1u64..5 {
+            match &result {
+                Err(BridgeError::Spawn(msg)) if msg.contains("Text file busy") => {
+                    std::thread::sleep(Duration::from_millis(50 * attempt));
+                    result = retry();
+                }
+                _ => return result,
+            }
+        }
+        result
+    }
+
+    // ----- gh#17 — detect_capture_cli orchestrator (AC#1, AC#2) -----------
+
+    #[test]
+    fn classify_detect_failure_none_returns_binary_not_installed() {
+        let f = classify_detect_failure(None);
+        assert_eq!(f.kind, DetectFailureKind::BinaryNotInstalled);
+        assert!(
+            f.suggested_fix.contains("npm install"),
+            "install hint missing: {}",
+            f.suggested_fix
+        );
+    }
+
+    #[test]
+    fn classify_detect_failure_127_with_env_node_stderr_returns_node_missing() {
+        // The signature failure mode that motivated #17.
+        let err = BridgeError::NonZeroExit {
+            code: 127,
+            stderr: "env: node: No such file or directory\n".to_string(),
+        };
+        let f = classify_detect_failure(Some(err));
+        assert_eq!(f.kind, DetectFailureKind::NodeMissing);
+        assert!(
+            f.suggested_fix.contains("ln -s") || f.suggested_fix.contains("terminal"),
+            "expected symlink or terminal hint: {}",
+            f.suggested_fix
+        );
+    }
+
+    #[test]
+    fn classify_detect_failure_127_without_env_node_stderr_returns_probe_error() {
+        // exit 127 but stderr does NOT mention env+node. Could be a
+        // user-mistyped binary path. Don't misclassify as node-missing.
+        let err = BridgeError::NonZeroExit {
+            code: 127,
+            stderr: "trail: command not found".to_string(),
+        };
+        let f = classify_detect_failure(Some(err));
+        assert_eq!(f.kind, DetectFailureKind::ProbeError);
+    }
+
+    #[test]
+    fn classify_detect_failure_timeout_returns_probe_timed_out() {
+        let err = BridgeError::Timeout(Duration::from_secs(30));
+        let f = classify_detect_failure(Some(err));
+        assert_eq!(f.kind, DetectFailureKind::ProbeTimedOut);
+    }
+
+    #[test]
+    fn classify_detect_failure_non_zero_exit_returns_probe_error() {
+        let err = BridgeError::NonZeroExit {
+            code: 1,
+            stderr: "some error\nsecond line".to_string(),
+        };
+        let f = classify_detect_failure(Some(err));
+        assert_eq!(f.kind, DetectFailureKind::ProbeError);
+        // First stderr line surfaces in message; subsequent lines do not.
+        assert!(f.message.contains("some error"));
+        assert!(!f.message.contains("second line"));
+    }
+
+    #[test]
+    fn classify_detect_failure_spawn_returns_binary_not_installed() {
+        let err = BridgeError::Spawn("no such file".to_string());
+        let f = classify_detect_failure(Some(err));
+        assert_eq!(f.kind, DetectFailureKind::BinaryNotInstalled);
+    }
+
+    #[test]
+    fn detect_failure_kind_serializes_as_kebab_case() {
+        // The IPC payload uses these strings verbatim; the UI's failure
+        // card switches on the kebab-case discriminant.
+        assert_eq!(DetectFailureKind::BinaryNotInstalled.as_str(), "binary-not-installed");
+        assert_eq!(DetectFailureKind::NodeMissing.as_str(), "node-missing");
+        assert_eq!(DetectFailureKind::ProbeTimedOut.as_str(), "probe-timed-out");
+        assert_eq!(DetectFailureKind::ProbeError.as_str(), "probe-error");
+    }
+
+    #[test]
+    fn detect_source_serializes_as_kebab_case() {
+        assert_eq!(DetectSource::LoginShell.as_str(), "login-shell");
+        assert_eq!(DetectSource::Candidate.as_str(), "candidate");
+        assert_eq!(DetectSource::MarkerFile.as_str(), "marker-file");
+    }
+
+    #[test]
+    fn detect_config_default_includes_npm_install_paths() {
+        let cfg = DetectConfig::default();
+        // The four canonical npm install locations on macOS / Linux must
+        // appear. The HOME-expanded entries depend on $HOME being set
+        // (test runners always have HOME set).
+        assert!(
+            cfg.candidate_paths.iter().any(|p| p == "/opt/homebrew/bin/trail"),
+            "candidate_paths missing /opt/homebrew/bin/trail: {:?}",
+            cfg.candidate_paths
+        );
+        assert!(
+            cfg.candidate_paths.iter().any(|p| p == "/usr/local/bin/trail"),
+            "candidate_paths missing /usr/local/bin/trail: {:?}",
+            cfg.candidate_paths
+        );
+        if let Ok(home) = std::env::var("HOME") {
+            assert!(
+                cfg.candidate_paths
+                    .iter()
+                    .any(|p| p == &format!("{home}/.npm-global/bin/trail")),
+                "candidate_paths missing $HOME/.npm-global/bin/trail: {:?}",
+                cfg.candidate_paths
+            );
+        }
+    }
+
+    #[test]
+    fn detect_finds_trail_via_candidate_path() {
+        // Place a working trail-like script at a candidate location and
+        // assert detect_capture_cli_with_config finds it via strategy (b).
+        let script = write_test_script("printf '0.1.0-detect-test\\n'");
+        let cfg = DetectConfig {
+            candidate_paths: vec![script.to_string_lossy().to_string()],
+            skip_login_shell: true,
+            marker_file: None,
+        };
+        let result = detect_with_etxtbsy_retry(&cfg);
+        assert!(result.is_ok(), "must detect candidate: {result:?}");
+        let success = result.unwrap();
+        assert_eq!(success.source, DetectSource::Candidate);
+        assert_eq!(success.version, "0.1.0-detect-test");
+        assert_eq!(success.path, script.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn detect_skips_missing_candidates_and_returns_failure() {
+        // Two candidates; neither exists on disk → falls through to
+        // failure classification with BinaryNotInstalled.
+        let cfg = DetectConfig {
+            candidate_paths: vec![
+                "/nonexistent/path/one/trail".to_string(),
+                "/nonexistent/path/two/trail".to_string(),
+            ],
+            skip_login_shell: true,
+            marker_file: None,
+        };
+        let result = detect_capture_cli_with_config(&cfg);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().kind,
+            DetectFailureKind::BinaryNotInstalled
+        );
+    }
+
+    #[test]
+    fn detect_falls_through_to_marker_file_when_no_candidates_match() {
+        let trail_script = write_test_script("printf '0.1.0-from-marker\\n'");
+        let trail_path = trail_script.to_string_lossy().to_string();
+        // Write the marker file pointing at the script.
+        let dir = tempfile::Builder::new()
+            .prefix("trail-detect-marker-test-")
+            .tempdir()
+            .expect("tempdir");
+        let marker_path = dir.path().join("last-run.json");
+        std::fs::write(
+            &marker_path,
+            serde_json::to_vec(&serde_json::json!({ "cli_path": trail_path }))
+                .unwrap(),
+        )
+        .unwrap();
+        let cfg = DetectConfig {
+            candidate_paths: vec!["/nonexistent/trail".to_string()],
+            skip_login_shell: true,
+            marker_file: Some(marker_path),
+        };
+        let result = detect_with_etxtbsy_retry(&cfg);
+        assert!(result.is_ok(), "must detect via marker file: {result:?}");
+        let success = result.unwrap();
+        assert_eq!(success.source, DetectSource::MarkerFile);
+        assert_eq!(success.version, "0.1.0-from-marker");
+        // Leak the tempdir so the marker file survives until probe ran.
+        std::mem::forget(dir);
+    }
+
+    #[test]
+    fn detect_probe_order_candidates_beat_marker_file() {
+        // When BOTH a candidate AND the marker file would succeed, the
+        // candidate strategy must win (AC#2 ordering: candidates before
+        // marker).
+        let candidate_script = write_test_script("printf '0.1.0-from-candidate\\n'");
+        let marker_script = write_test_script("printf '0.1.0-from-marker\\n'");
+        let dir = tempfile::Builder::new()
+            .prefix("trail-detect-order-test-")
+            .tempdir()
+            .expect("tempdir");
+        let marker_path = dir.path().join("last-run.json");
+        std::fs::write(
+            &marker_path,
+            serde_json::to_vec(&serde_json::json!({
+                "cli_path": marker_script.to_string_lossy().to_string(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let cfg = DetectConfig {
+            candidate_paths: vec![candidate_script.to_string_lossy().to_string()],
+            skip_login_shell: true,
+            marker_file: Some(marker_path),
+        };
+        let result = detect_with_etxtbsy_retry(&cfg);
+        let success = result.expect("must detect");
+        assert_eq!(success.source, DetectSource::Candidate);
+        assert_eq!(success.version, "0.1.0-from-candidate");
+        std::mem::forget(dir);
+    }
+
+    #[test]
+    fn read_marker_cli_path_returns_none_when_file_absent() {
+        let p = std::path::PathBuf::from("/tmp/trail-marker-does-not-exist-xyz123");
+        assert!(read_marker_cli_path(&p).is_none());
+    }
+
+    #[test]
+    fn read_marker_cli_path_returns_none_when_field_missing() {
+        let dir = tempfile::Builder::new()
+            .prefix("trail-marker-missing-field-")
+            .tempdir()
+            .unwrap();
+        let p = dir.path().join("marker.json");
+        std::fs::write(&p, b"{\"other_field\":\"value\"}").unwrap();
+        assert!(read_marker_cli_path(&p).is_none());
+    }
+
+    #[test]
+    fn read_marker_cli_path_returns_none_when_target_does_not_exist() {
+        let dir = tempfile::Builder::new()
+            .prefix("trail-marker-stale-")
+            .tempdir()
+            .unwrap();
+        let p = dir.path().join("marker.json");
+        std::fs::write(
+            &p,
+            b"{\"cli_path\":\"/totally/stale/path/that/cannot/exist\"}",
+        )
+        .unwrap();
+        assert!(read_marker_cli_path(&p).is_none());
+    }
+
+    #[test]
+    fn is_env_node_missing_matches_canonical_stderr() {
+        assert!(is_env_node_missing("env: node: No such file or directory"));
+        assert!(is_env_node_missing(
+            "env: \u{2018}node\u{2019}: No such file or directory" // GNU env quotes
+        ));
+        assert!(!is_env_node_missing("trail: command not found"));
+        assert!(!is_env_node_missing("env: bash: No such file"));
+    }
+
+    /// ETXTBSY retry for the detect_capture_cli orchestrator. The
+    /// candidate probe spawns a script we just wrote — same race as
+    /// `probe_with_etxtbsy_retry`. Retries the orchestrator up to 5x
+    /// when the underlying spawn fails with "Text file busy".
+    fn detect_with_etxtbsy_retry(
+        cfg: &DetectConfig,
+    ) -> Result<DetectSuccess, DetectFailure> {
+        for attempt in 0u64..5 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(50 * attempt));
+            }
+            let result = detect_capture_cli_with_config(cfg);
+            match &result {
+                Err(failure) if failure.message.contains("Text file busy") && attempt < 4 => {
+                    continue;
+                }
+                _ => return result,
+            }
+        }
+        unreachable!("retry loop exits via the `_` arm")
     }
 
     // ----- Sprint 5 (gh#12) — packet post + decide subprocess invokers ------

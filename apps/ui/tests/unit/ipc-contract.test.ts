@@ -14,15 +14,17 @@ import {
 const VALID_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 describe('IPC contract', () => {
-  it('exposes the 12 B5 §6.1 commands + validate_capture_cli_path + decide_on_pr (gh#11 F3 + gh#12 AC-4)', () => {
+  it('exposes the 12 B5 §6.1 commands + validate_capture_cli_path + decide_on_pr + detect_capture_cli (gh#11 F3 + gh#12 AC-4 + gh#17)', () => {
     // Cycle-1.5 F3 added validate_capture_cli_path (13).
-    // Sprint 5 (gh#12 AC-4) adds decide_on_pr to wire J9 reviewer-side
-    // block-with-reason to Phase 3b's `trail packet decide`. The pin
-    // canaries any future addition; updating the test is a deliberate
-    // decision point with the cycle that added each entry documented.
+    // Sprint 5 (gh#12 AC-4) added decide_on_pr (14).
+    // gh#17 adds detect_capture_cli (15) — Settings → Capture
+    // "Detect" button + FirstRun auto-detect. The pin canaries any
+    // future addition; updating the test is a deliberate decision
+    // point with the cycle that added each entry documented.
     expect(Object.keys(IPC_COMMAND_SCHEMAS).sort()).toEqual([
       'audit_log_append',
       'decide_on_pr',
+      'detect_capture_cli',
       'override_risk',
       'post_to_pr',
       'preview_redacted',
