@@ -42,18 +42,33 @@ const COLD_HARNESS_SLACK_MS = 250;
 // dev hardware (Apple Silicon). The product budget is preserved for local
 // runs; CI gets an allowance so noise doesn't false-fail the strict gate.
 //
-// Observed timeline (synaptiai/trail#19 tracks the investigation):
-//   - 254.7ms / 250ms budget on run 26029868512 (2026-05-18) → +50ms allowance
-//   - 346.4ms / 300ms budget on run 26081405561 (2026-05-19) → +100ms allowance
-//   - 367.7ms / 350ms budget on run 26082290944 (2026-05-19) → +200ms allowance
+// synaptiai/trail#19 investigation (2026-05-19) found that runs on the
+// PRIVATE internal mirror (synaptiai/trail-internal) are systematically
+// ~40% slower than the PUBLIC repo across every meaningful E2E step —
+// install, browser download, test execution, cold-paint — at a constant
+// ratio. Same runner image (ubuntu-24.04 / ubuntu24/20260513.135), same
+// code, same time-of-day. The 40% gap is consistent with private-repo
+// runner provisioning differences on non-Enterprise plans, not a code
+// regression. The "346.4ms vs 254.7ms" timeline in earlier comments
+// compared an internal-repo run to a public-repo run as if they were
+// the same baseline — they weren't.
 //
-// The variance range across three consecutive runs on the same code is
-// 254-367ms (113ms). That's wider than runner jitter alone would explain.
-// Likely either shiki cold-start regressed or the ubuntu-latest image got
-// slower in 2026-05. The 200ms allowance is the smallest budget that
-// covers the observed variance with ~80ms headroom; gh#19 will close the
-// investigation and drop it back to 50ms once the root cause is fixed.
-const CI_VARIANCE_ALLOWANCE_MS = process.env['CI'] ? 200 : 0;
+// Distribution (2026-05-18/19):
+//   - public  CI: 244 / 246 / 252 / 262 ms   (mean ~250, range 19ms)
+//   - internal CI: 325 / 341 / 360 / 363 / 364 / 367 / 378 / 384 / 477 ms
+//     (mean ~373, range 152ms)
+//
+// Public CI sits right under the original 250ms budget; restore the
+// original +50ms allowance + 0.1 slow-frame ratio there. Internal CI
+// keeps the +200ms allowance + 0.15 slow-frame ratio so the gate doesn't
+// false-fail on the runner gap.
+const IS_INTERNAL_CI =
+  process.env['CI'] === 'true' && process.env['GITHUB_REPOSITORY'] === 'synaptiai/trail-internal';
+const CI_VARIANCE_ALLOWANCE_MS = !process.env['CI']
+  ? 0
+  : IS_INTERNAL_CI
+    ? 200
+    : 50;
 
 async function installPerfHarness(page: Page, opts: { hunkCount: number }) {
   await page.addInitScript((opts) => {
@@ -234,13 +249,13 @@ test.describe('DiffHunk perf budgets (gh#10 criterion 6)', () => {
     const avg = frameDeltas.reduce((s, d) => s + d, 0) / Math.max(1, frameDeltas.length);
     // eslint-disable-next-line no-console
     console.log(`[perf] 100-hunk scroll: avg ${avg.toFixed(1)}ms; ${slow.length}/${frameDeltas.length} slow (budget 33.4ms = 30fps floor)`);
-    // Allow up to 10% slow frames locally / 15% on CI. Jitter happens, but
-    // a sustained drop would mean the diff tab is starving the main thread.
-    // CI bump (gh#17): observed 0.1 exact (2/20 slow) on run 26081405561
-    // — at the threshold, fails on noise. 0.15 gives 1-frame headroom on
-    // a 20-frame sample without losing the regression signal (a real
-    // starvation would push 30-50% slow frames).
-    const SLOW_FRAME_THRESHOLD = process.env['CI'] ? 0.15 : 0.1;
+    // Allow up to 10% slow frames locally + on public CI / 15% on internal
+    // CI. Jitter happens, but a sustained drop would mean the diff tab is
+    // starving the main thread. The 15% allowance on internal CI matches
+    // the runner-provisioning gap documented above; public CI sits well
+    // under the 10% threshold so the original strict ratio is preserved
+    // there (gh#19).
+    const SLOW_FRAME_THRESHOLD = IS_INTERNAL_CI ? 0.15 : 0.1;
     expect(
       slow.length / Math.max(1, frameDeltas.length),
       `>${(SLOW_FRAME_THRESHOLD * 100).toFixed(0)}% slow frames during 100-hunk scroll (avg ${avg.toFixed(1)}ms; ${slow.length} of ${frameDeltas.length} > ${FRAME_BUDGET_30FPS}ms)`,
