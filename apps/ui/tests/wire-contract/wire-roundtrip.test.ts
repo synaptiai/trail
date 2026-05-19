@@ -44,6 +44,7 @@ import {
   IPC_RESPONSE_SCHEMAS,
   ipcErrorSchema,
   validateCaptureCliPathResponseSchema,
+  detectCaptureCliResponseSchema,
   type IpcCommandName,
 } from '../../src/ipc/contract';
 
@@ -106,6 +107,17 @@ function parseSnapshot({ command, body }: ParsedSnapshot): {
     return {
       schema: 'validateCaptureCliPathResponseSchema',
       result: validateCaptureCliPathResponseSchema.safeParse(body),
+    };
+  }
+
+  // gh#17: detect_capture_cli also uses a discriminated union with a
+  // top-level `kind` field. Without this branch the generic IpcError
+  // path below would misroute it. Must come before the IpcError shape
+  // check since detect responses ARE shaped like { kind: "..." }.
+  if (command === 'detect_capture_cli') {
+    return {
+      schema: 'detectCaptureCliResponseSchema',
+      result: detectCaptureCliResponseSchema.safeParse(body),
     };
   }
 

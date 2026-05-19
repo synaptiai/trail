@@ -112,6 +112,7 @@ fn main() {
             ipc::subscribe_fs_watch,
             ipc::subscribe_settings_change,
             ipc::validate_capture_cli_path,
+            ipc::detect_capture_cli,
             #[cfg(any(debug_assertions, feature = "test-fixtures"))]
             ipc::seed_stress_packets,
         ])
@@ -149,6 +150,7 @@ fn main() {
 const PINNED_IPC_HANDLERS: &[&str] = &[
     "audit_log_append",
     "decide_on_pr",
+    "detect_capture_cli",
     "override_risk",
     "post_to_pr",
     "preview_redacted",

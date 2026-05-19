@@ -1,7 +1,18 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Button, Modal, Tabs, type TabItem } from '@/components/primitives';
-import { invoke, readSettings, validateCaptureCliPath, writeSettings } from '@/ipc/client';
-import type { Persona, Settings, ValidateCaptureCliPathResponse } from '@/ipc/contract';
+import {
+  detectCaptureCli,
+  invoke,
+  readSettings,
+  validateCaptureCliPath,
+  writeSettings,
+} from '@/ipc/client';
+import type {
+  DetectCaptureCliResponse,
+  Persona,
+  Settings,
+  ValidateCaptureCliPathResponse,
+} from '@/ipc/contract';
 import './M6SettingsModal.css';
 
 /**
@@ -244,20 +255,41 @@ function RedactionPanel({ settings, onChange }: PanelProps) {
  * tests/unit/M6SettingsModal-cli-bridge.test.tsx exercises the full
  * pathway and FAILS if the IPC handler is unwired.
  */
+type DetectOutcome =
+  | { state: 'idle' }
+  | { state: 'detecting' }
+  | { state: 'failed'; failure_kind: string; message: string; suggested_fix: string }
+  | { state: 'system-error'; message: string };
+
 function CapturePanel({ settings, onChange }: PanelProps) {
   const [draftPath, setDraftPath] = useState<string>(settings.capture_cli_path);
   const [probe, setProbe] = useState<
     | { state: 'idle' }
     | { state: 'probing' }
-    | { state: 'verified'; version: string; verifiedPath: string }
+    | { state: 'verified'; version: string; verifiedPath: string; source?: string }
     | { state: 'rejected'; kind: string; message: string; rejectedPath: string }
     | { state: 'system-error'; message: string }
   >({ state: 'idle' });
+  const [detect, setDetect] = useState<DetectOutcome>({ state: 'idle' });
+  const [fixCopied, setFixCopied] = useState<boolean>(false);
+
+  // gh#17 cycle-2 F1: monotonic counter to cancel stale in-flight Detect
+  // promises. Every action that should INVALIDATE a pending detect (a new
+  // Detect click, starting a Verify, editing the path, the modal re-syncing
+  // from settings) increments this counter; when the IPC promise resolves
+  // we compare against the snapshot taken at start and bail if the counter
+  // advanced — preventing the late-resolve from overwriting `draftPath`
+  // (e.g., user typed a different path after clicking Detect) or stomping
+  // an in-flight `probe` state.
+  const detectGenRef = useRef<number>(0);
 
   // Keep the draft synced when the modal reopens with a different settings value.
   useEffect(() => {
+    detectGenRef.current++;
     setDraftPath(settings.capture_cli_path);
     setProbe({ state: 'idle' });
+    setDetect({ state: 'idle' });
+    setFixCopied(false);
   }, [settings.capture_cli_path]);
 
   const onProbe = useCallback(async () => {
@@ -271,6 +303,13 @@ function CapturePanel({ settings, onChange }: PanelProps) {
       });
       return;
     }
+    // F1: clear any stale Detect failure card before starting Verify so
+    // the two state machines don't overlap visually. Bump the detect
+    // generation so any in-flight Detect promise that resolves later
+    // does not overwrite the verify result or the user's typed path
+    // (gh#17 cycle-2 race fix).
+    detectGenRef.current++;
+    setDetect({ state: 'idle' });
     setProbe({ state: 'probing' });
     try {
       const result: ValidateCaptureCliPathResponse = await validateCaptureCliPath(candidate);
@@ -298,6 +337,63 @@ function CapturePanel({ settings, onChange }: PanelProps) {
     }
   }, [draftPath]);
 
+  // gh#17 AC#1 + AC#4 + AC#5: Detect button. On success, auto-fill the
+  // path field and mark verified (the detect probe already ran --version
+  // through the augmented spawn). On failure, render the failure card
+  // with message + suggested_fix.
+  const onDetect = useCallback(async () => {
+    const gen = ++detectGenRef.current;
+    setDetect({ state: 'detecting' });
+    setFixCopied(false);
+    try {
+      const result: DetectCaptureCliResponse = await detectCaptureCli();
+      // F1 race guard: bail if a newer Detect / Verify / edit invalidated
+      // this promise. Without this, a slow IPC could overwrite a path the
+      // user typed after clicking Detect, or stomp an in-flight Verify.
+      if (gen !== detectGenRef.current) return;
+      if (result.kind === 'detected') {
+        setDraftPath(result.path);
+        setProbe({
+          state: 'verified',
+          version: result.version,
+          verifiedPath: result.path,
+          source: result.source,
+        });
+        setDetect({ state: 'idle' });
+      } else {
+        setDetect({
+          state: 'failed',
+          failure_kind: result.failure_kind,
+          message: result.message,
+          suggested_fix: result.suggested_fix,
+        });
+      }
+    } catch (err) {
+      if (gen !== detectGenRef.current) return;
+      setDetect({
+        state: 'system-error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const onCopyFix = useCallback(async () => {
+    if (detect.state !== 'failed') return;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(detect.suggested_fix);
+        setFixCopied(true);
+        window.setTimeout(() => setFixCopied(false), 2000);
+      } catch (err) {
+        // Clipboard permission denied or unsupported — leave the text
+        // visible so the user can manually copy. Surface a console.warn
+        // so the diagnostic exists when users report "I clicked Copy
+        // and nothing happened" (gh#17 ERR-3).
+        console.warn('[Trail] clipboard write failed:', err);
+      }
+    }
+  }, [detect]);
+
   const onSaveVerified = useCallback(() => {
     if (probe.state !== 'verified') return;
     onChange({ capture_cli_path: probe.verifiedPath });
@@ -322,8 +418,15 @@ function CapturePanel({ settings, onChange }: PanelProps) {
           value={draftPath}
           onChange={(e) => {
             setDraftPath(e.target.value);
-            // Editing invalidates any prior probe outcome.
+            // Editing invalidates any prior probe outcome — clear both
+            // the verify-side probe state AND the detect-side failure
+            // card so the user isn't looking at stale red text against
+            // a path they just typed (gh#17 F1). Bump detectGen so an
+            // in-flight Detect cannot overwrite the typed value when it
+            // resolves (gh#17 cycle-2 race fix).
+            detectGenRef.current++;
             if (probe.state !== 'idle') setProbe({ state: 'idle' });
+            if (detect.state !== 'idle') setDetect({ state: 'idle' });
           }}
           placeholder="trail"
           aria-describedby="m6-capture-status"
@@ -335,6 +438,15 @@ function CapturePanel({ settings, onChange }: PanelProps) {
         </span>
       </label>
       <div className="m6__capture-actions">
+        <Button
+          variant="ghost"
+          size="md"
+          onClick={onDetect}
+          disabled={detect.state === 'detecting'}
+          data-testid="m6-capture-detect"
+        >
+          {detect.state === 'detecting' ? 'Detecting…' : 'Detect'}
+        </Button>
         <Button
           variant="ghost"
           size="md"
@@ -363,16 +475,28 @@ function CapturePanel({ settings, onChange }: PanelProps) {
       <div
         id="m6-capture-status"
         className="m6__capture-status type-body-sm"
-        role={probe.state === 'rejected' || probe.state === 'system-error' ? 'alert' : undefined}
+        role={
+          probe.state === 'rejected' ||
+          probe.state === 'system-error' ||
+          detect.state === 'failed' ||
+          detect.state === 'system-error'
+            ? 'alert'
+            : undefined
+        }
         aria-live="polite"
       >
-        {probe.state === 'idle' ? (
+        {detect.state === 'detecting' ? (
+          <span className="m6__hint">Detecting trail CLI…</span>
+        ) : probe.state === 'idle' && detect.state === 'idle' ? (
           <span className="m6__hint">Not yet verified.</span>
         ) : probe.state === 'probing' ? (
           <span className="m6__hint">Probing capture CLI…</span>
         ) : probe.state === 'verified' && verifiedMatchesDraft ? (
           <span className="m6__capture-status--ok" data-testid="m6-capture-verified">
             ✓ verified — version {probe.version}
+            {probe.source ? (
+              <span className="m6__hint"> (detected via {probe.source.replace(/-/g, ' ')})</span>
+            ) : null}
           </span>
         ) : probe.state === 'rejected' && rejectedMatchesDraft ? (
           <span className="m6__capture-status--err" data-testid="m6-capture-rejected">
@@ -389,6 +513,48 @@ function CapturePanel({ settings, onChange }: PanelProps) {
           <span className="m6__hint">Path edited; verify before saving.</span>
         )}
       </div>
+      {detect.state === 'failed' ? (
+        <div
+          className="m6__capture-detect-failure"
+          data-testid="m6-capture-detect-failure"
+          data-failure-kind={detect.failure_kind}
+          role="alert"
+        >
+          <p className="m6__capture-detect-failure__title type-ui">
+            ✗ Detect failed ({detect.failure_kind.replace(/-/g, ' ')})
+          </p>
+          <p className="m6__capture-detect-failure__message type-body-sm">
+            {detect.message}
+          </p>
+          <div className="m6__capture-detect-failure__fix">
+            <p className="type-ui">Suggested fix</p>
+            <pre className="m6__capture-detect-failure__fix-text type-mono-sm">
+              {detect.suggested_fix}
+            </pre>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onCopyFix}
+              data-testid="m6-capture-detect-failure-copy"
+            >
+              {fixCopied ? 'Copied' : 'Copy fix'}
+            </Button>
+          </div>
+        </div>
+      ) : detect.state === 'system-error' ? (
+        <div
+          className="m6__capture-detect-failure"
+          data-testid="m6-capture-detect-system-error"
+          role="alert"
+        >
+          <p className="m6__capture-detect-failure__title type-ui">
+            ✗ Detect could not run
+          </p>
+          <p className="m6__capture-detect-failure__message type-body-sm">
+            {detect.message}
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }

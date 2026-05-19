@@ -162,7 +162,7 @@ export function App() {
               onSettingsClose={handleCloseSettings}
             />
           ) : (
-            <FirstRun />
+            <FirstRun persona={persona} />
           )}
         </section>
       </main>

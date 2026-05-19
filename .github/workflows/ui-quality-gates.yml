@@ -145,15 +145,24 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry + target
+        # gh#17 fix: namespace cache key by `github.repository`. Prior key
+        # was repo-agnostic, which let pre-rename caches (from when this
+        # repo was named `trail` and checked out at
+        # `/home/runner/work/trail/trail/`) keep getting restored after the
+        # rename to `trail-internal`. tauri-build bakes absolute paths into
+        # `target/debug/build/tauri-*/out/permissions/`, so the stale cache
+        # caused `cargo check` to fail with `failed to read plugin
+        # permissions: failed to read file '/home/runner/work/trail/trail/
+        # apps/ui/src-tauri/target/.../app_hide.toml'`.
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             apps/ui/src-tauri/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('apps/ui/src-tauri/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('apps/ui/src-tauri/Cargo.lock') }}
           restore-keys: |
-            cargo-${{ runner.os }}-
+            cargo-${{ runner.os }}-${{ github.repository }}-
 
       - name: Install Tauri Linux build deps
         # Tauri 2.x on Linux needs webkit2gtk-4.1 + ancillary libs. These are
